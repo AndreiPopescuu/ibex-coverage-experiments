@@ -21,6 +21,7 @@ def main():
     l6_rand_150 = _load(L6 / "rvc_random_baseline_150.npz")
     l6_ppo      = _load(L6 / "ppo_rvc_rich.npz")
     l7_rand     = _load(THIS / "l7_random_baseline.npz")
+    l7_ppo      = _load(THIS / "l7_ppo_curve.npz")
 
     if l5_ppo_rich:
         ax.plot(l5_ppo_rich["ep"], l5_ppo_rich["cum_pct"],
@@ -38,6 +39,11 @@ def main():
         ax.plot(l7_rand["ep"], l7_rand["cum_pct"],
                 label=f"L7 stimulus random (64 ops + mem prepop + trap, 30 eps) → {l7_rand['cum_pct'][-1]:.2f}%",
                 color="#2ca02c", linewidth=2.8)
+    if l7_ppo:
+        n_eps = len(l7_ppo["ep"])
+        ax.plot(l7_ppo["ep"], l7_ppo["cum_pct"],
+                label=f"L7 stimulus PPO (64 ops + mem prepop + trap, {n_eps} eps) → {l7_ppo['cum_pct'][-1]:.2f}%",
+                color="#ff7f0e", linewidth=2.0)
 
     ax.axhline(75.86, color="#2ca02c", linestyle=":", alpha=0.5, linewidth=1.2,
                label="L7 reachable ceiling ≈ 75.9% (tied-off excluded)")

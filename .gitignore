@@ -15,7 +15,15 @@ __pycache__/
 # Stimulus programs written at runtime
 /tmp/rl_*_program.json
 
-# Trained PPO models larger than ~1 MB are excluded; the zipped models fit in
-# git but the full-sized ones (e.g. ppo_l6.zip at 87 MB) should be regenerated
-# by running the `train_*.py` script in the relevant level directory.
+# Trained PPO models — regenerate by running the train_*.py script
 rl-coverage/level4_shadow/ppo_l6.zip
+rl-coverage/level9_functional/*.zip
+
+# Windows Zone.Identifier files
+*:Zone.Identifier*
+
+# Virtual environments
+.venv/
+
+# Large comparison npz (regenerate with compare_agents_l9.py)
+rl-coverage/level9_functional/agent_comparison.npz
