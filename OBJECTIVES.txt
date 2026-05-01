@@ -1,0 +1,86 @@
+Objectives and Contributions — Ibex Coverage Experiments
+
+─────────────────────────────────────────────────────────────
+1. OBJECTIVES
+─────────────────────────────────────────────────────────────
+
+This work extends the LLM4DV experiment (Nawaz et al.), which demonstrated
+that large language models can drive functional coverage of the lowRISC Ibex
+RISC-V core. Rather than using an LLM as the stimulus generator, this project
+replaces it with a Reinforcement Learning agent (PPO) and systematically
+scales the experiment across seven levels of increasing complexity.
+
+The first two levels are grounded directly in the testbenches proposed by
+LLM4DV: Level 1 targets the Ibex instruction decoder using the same 2,107-bin
+coverage plan, and Level 2 targets the CPU retirement stream using the same
+196-bin functional coverage model (SEEN, ZERO_DST, ZERO_SRC, SAME_SRC,
+RAW_HAZARD). These levels establish that a PPO agent can match or exceed the
+LLM4DV baseline on the original benchmark.
+
+Levels 3 through 7 are original extensions of the experiment. Each level
+increases the complexity of either the coverage model, the instruction set, or
+the simulation backend:
+
+  Level 3 — extends functional coverage with K=3 dependency chains and
+             RAW hazards at distances 1, 2, and 3 (1,739 bins)
+  Level 4 — scales to a full RV32I/M functional coverage model (5,615 bins)
+             and introduces shadow-to-RTL validation
+  Level 5 — moves from functional to toggle coverage on the live Verilator
+             simulation of the full Ibex core
+  Level 6 — extends the instruction encoder with RVC (compressed instructions)
+             and characterises the reachable coverage ceiling
+  Level 7 — targets the ceiling through stimulus engineering: memory
+             prepopulation, trap handling, CSR rotation, and AUIPC
+
+
+─────────────────────────────────────────────────────────────
+2. CONTRIBUTIONS
+─────────────────────────────────────────────────────────────
+
+The following summarises the technical contributions across all levels.
+Detailed per-level breakdowns are in CONTRIBUTIONS.txt.
+
+Shadow simulation
+  Pure-Python reimplementations of the RTL coverage monitor for Levels 1–4,
+  running ~100–160× faster than Verilator (measured: ~70–105K steps/sec shadow
+  vs ~630 insn/sec Verilator). Each shadow exposes a single function
+  bins_for_step(op, rd, rs1, rs2, ..., history) that returns the list of bin
+  indices fired by one instruction, mirroring the cocotb monitor exactly.
+  Shadow-to-RTL fidelity was validated bin-by-bin at Levels 1, 2, and 4
+  (zero divergence in all cases).
+
+Gymnasium environments
+  A Gymnasium-compatible environment was implemented at each level, encapsulating:
+  - Action space: MultiDiscrete([N_OPS, 32, 32, 32]) or with an additional
+    IMM_BUCKETS dimension for levels with immediate-bearing instructions
+  - Observation space: coverage vector (MultiBinary or Box) concatenated with
+    sequential state (prev_writer one-hot, prev_rd one-hot at Level 2;
+    per-register writer/age at Levels 3–4; per-module toggle fractions
+    at Levels 5–7)
+  - Reward: novelty-based (bins newly covered this episode) to prevent
+    reward saturation as cumulative coverage grows
+
+PPO hyperparameters
+  All levels use Stable-Baselines3 PPO with MlpPolicy. Key values:
+
+  | Parameter      | Levels 1–2      | Level 3–4       | Levels 5–7      |
+  |----------------|-----------------|-----------------|-----------------|
+  | learning_rate  | 3e-4            | 3e-4            | 3e-4            |
+  | n_steps        | 512             | 512             | = episode_steps |
+  | batch_size     | 256             | 2048            | 256             |
+  | n_epochs       | 4               | 4               | 4               |
+  | gamma          | 0.99            | 0.995           | 0.999           |
+  | ent_coef       | 0.02–0.03       | 0.02            | 0.05            |
+  | net_arch       | default [64,64] | [512, 512]      | [128, 128]      |
+
+  gamma increases with episode length: at 1,024-step episodes (Levels 5–7),
+  gamma=0.999 is required for the end-of-episode reward to propagate to early
+  steps. ent_coef is raised at levels where coverage saturates quickly with
+  random stimulus, forcing broader exploration.
+
+Parallel environments
+  Levels 1–4 use DummyVecEnv (4 environments) for in-process parallelism.
+  Level 3 additionally supports SubprocVecEnv (up to 16 processes) for true
+  multiprocess parallelism. Levels 5–7 use a single environment because
+  Verilator writes to a shared coverage.dat file, making parallel runs unsafe.
+

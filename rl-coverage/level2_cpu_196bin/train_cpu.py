@@ -6,13 +6,21 @@ writer->reader with matching register, something uniform random only
 lucks into 1/32 of the time.
 """
 
-import argparse, time, numpy as np
+import argparse, time, datetime, numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.callbacks import BaseCallback
 
 from cpu_env import IbexCpuEnv
 from shadow_cpu import N_BINS, Op
 N_OPS = len(Op)
+
+T0_GLOBAL = time.time()
+
+def ts():
+    """Timestamp relativ la startul programului."""
+    elapsed = time.time() - T0_GLOBAL
+    return f"[+{elapsed:6.3f}s]"
 
 
 def random_cpu(n_samples: int, seed: int = 0) -> np.ndarray:
@@ -20,10 +28,14 @@ def random_cpu(n_samples: int, seed: int = 0) -> np.ndarray:
     env.reset(seed=seed)
     rng = np.random.default_rng(seed)
     curve = np.empty(n_samples, dtype=np.int32)
+    prev = 0
     for t in range(n_samples):
         a = [rng.integers(N_OPS), rng.integers(32), rng.integers(32), rng.integers(32), rng.integers(3)]
         _, _, term, trunc, info = env.step(a)
         curve[t] = info["covered"]
+        if info["covered"] > prev:
+            prev = info["covered"]
+            print(f"  {ts()} step {t+1:>6}  bins: {prev:>3}/{N_BINS}  ({100*prev/N_BINS:.1f}%)")
         if term: curve[t:] = info["covered"]; break
     return curve
 
@@ -32,12 +44,39 @@ def ppo_eval(model, n_samples: int, seed: int = 0) -> np.ndarray:
     env = IbexCpuEnv(episode_steps=n_samples, seed=seed)
     obs, _ = env.reset(seed=seed)
     curve = np.empty(n_samples, dtype=np.int32)
+    prev = 0
     for t in range(n_samples):
         action, _ = model.predict(obs, deterministic=False)
         obs, _, term, trunc, info = env.step(action)
         curve[t] = info["covered"]
+        if info["covered"] > prev:
+            prev = info["covered"]
+            print(f"  {ts()} step {t+1:>6}  bins: {prev:>3}/{N_BINS}  ({100*prev/N_BINS:.1f}%)")
         if term: curve[t:] = info["covered"]; break
     return curve
+
+
+class TimestampCallback(BaseCallback):
+    def __init__(self, log_every=50_000):
+        super().__init__()
+        self.log_every   = log_every
+        self.last_log    = 0
+        self.best_cov    = 0
+
+    def _on_step(self) -> bool:
+        # Coverage din fiecare env paralel
+        for info in self.locals.get("infos", []):
+            cov = info.get("covered", 0)
+            if cov > self.best_cov:
+                self.best_cov = cov
+                print(f"  {ts()} step {self.num_timesteps:>7}  "
+                      f"best coverage: {cov}/{N_BINS} ({100*cov/N_BINS:.1f}%)")
+
+        if self.num_timesteps - self.last_log >= self.log_every:
+            self.last_log = self.num_timesteps
+            print(f"  {ts()} step {self.num_timesteps:>7}  "
+                  f"[checkpoint]  best so far: {self.best_cov}/{N_BINS}")
+        return True
 
 
 def main():
@@ -63,8 +102,9 @@ def main():
         verbose=0, seed=args.seed, device="cpu",
     )
     t0 = time.time()
-    model.learn(total_timesteps=args.ppo_steps, progress_bar=False)
-    print(f"  trained in {time.time()-t0:.1f}s")
+    model.learn(total_timesteps=args.ppo_steps, progress_bar=False,
+                callback=TimestampCallback(log_every=50_000))
+    print(f"  {ts()} training gata in {time.time()-t0:.3f}s")
 
     print(f"\n=== PPO eval: {args.eval_samples} samples ===")
     t0 = time.time()

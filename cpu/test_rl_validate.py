@@ -37,14 +37,44 @@ R_ENC = {
 WFI = 0x10500073
 PROGRAM_PATH = os.environ.get("RL_PROGRAM_JSON", "/tmp/rl_program.json")
 
+# BEQ x0, x0, +8  (opcode 0b1100011, not in our 14 ops → fires no coverage bins)
+# Used as trampoline scaffolding for backward JAL.
+BEQ_SKIP = 0x00000463
+
+
+def jal_enc(rd, offset):
+    o = offset & 0x1FFFFF
+    imm20    = (o >> 20) & 0x1
+    imm10_1  = (o >> 1)  & 0x3FF
+    imm11    = (o >> 11) & 0x1
+    imm19_12 = (o >> 12) & 0xFF
+    return (imm20 << 31) | (imm10_1 << 21) | (imm11 << 20) | (imm19_12 << 12) | (rd << 7) | 0b1101111
+
 
 def build_from_sequence(seq):
     prog = []
     for entry in seq:
-        op, rd, rs1, rs2 = int(entry[0]), int(entry[1]), int(entry[2]), int(entry[3])
-        if op not in R_ENC:
-            continue  # skip JAL or anything unexpected
-        prog.append(R_ENC[op](rd, rs1, rs2))
+        op  = int(entry[0])
+        rd  = int(entry[1])
+        rs1 = int(entry[2])
+        rs2 = int(entry[3])
+        imm_sign = int(entry[4]) if len(entry) > 4 else 0
+
+        if op == 13:  # JAL
+            if imm_sign < 0:
+                # Backward JAL trampoline — no infinite loop, no extra coverage bins:
+                #   [A]:   BEQ x0,x0,+8  → skip to [A+8] (the backward JAL)
+                #   [A+4]: BEQ x0,x0,+8  → trampoline: escape to [A+12] (next instr)
+                #   [A+8]: jal(rd, -4)   → backward JAL → jumps to [A+4] (trampoline)
+                prog.append(BEQ_SKIP)           # skip to backward JAL
+                prog.append(BEQ_SKIP)           # trampoline: escape past backward JAL
+                prog.append(jal_enc(rd, -4))    # backward JAL
+            else:
+                # Forward JAL: offset +4 = jump directly to next instruction.
+                # No NOP needed, RAW hazard chain preserved.
+                prog.append(jal_enc(rd, +4))
+        elif op in R_ENC:
+            prog.append(R_ENC[op](rd, rs1, rs2))
     prog.append(WFI)
     return prog
 

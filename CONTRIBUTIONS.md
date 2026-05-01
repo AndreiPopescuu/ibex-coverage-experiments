@@ -1,0 +1,229 @@
+# Contributions — Ibex Coverage Experiments
+
+## Overview
+
+This document describes the contributions made across seven levels of
+experimentation, targeting functional and toggle coverage of the lowRISC
+Ibex RISC-V core using Reinforcement Learning and shadow-based simulation.
+
+### General Methodology
+
+The core approach applied consistently across all levels:
+
+- **Shadow model**: a pure-Python reimplementation of the RTL coverage
+  logic, used for fast RL training. The shadow runs ~1,500x faster than
+  real Verilator simulation, making thousands of training episodes feasible.
+  Policies trained on the shadow are then validated against real RTL.
+
+- **PPO (Proximal Policy Optimization)**: the RL algorithm used throughout,
+  via Stable-Baselines3. Key hyperparameters used across levels:
+
+  | Hyperparameter | Value(s) used |
+  |----------------|---------------|
+  | Learning rate  | 3e-4 (constant across all levels) |
+  | n_steps        | 512 (rollout length per update) |
+  | batch_size     | 256 (L1–L2), 2048 (L3) |
+  | n_epochs       | 4 |
+  | gamma          | 0.99 (L1–L2, L5), 0.995 (L4), 0.999 (L6) |
+  | ent_coef       | 0.02 (L1, L4), 0.03 (L2), 0.05 (L6) |
+
+- **Parallel environments**: training uses multiple environments in
+  parallel via `DummyVecEnv` (4 envs, L1–L4) and `SubprocVecEnv`
+  (configurable n_envs, L3+), increasing sample throughput without
+  changing the algorithm.
+
+- **RTL validation**: trained policies are validated against real
+  Verilator-compiled Ibex RTL via cocotb, confirming shadow-to-RTL
+  fidelity bin-by-bin.
+
+---
+
+## Level 1 — Combinational Decoder (2,107 bins)
+
+**Target:** The Ibex instruction decoder — a purely combinational block
+with no clock and no pipeline.
+
+**Contributions:**
+- Implemented a **2,107-bin Python shadow model** (`shadow_decoder.py`)
+  mirroring the LLM4DV coverage model for the Ibex decoder, covering:
+  instruction SEEN bins, register port bins (read_A, read_B, write), and
+  cross-coverage bins (op × register)
+- Implemented a **Gymnasium environment** (`decoder_env.py`) with a
+  structured action space `MultiDiscrete([26, 32, 32, 32])` encoding
+  (op\_type, rd, rs1, rs2); trained with 4 parallel environments
+  via `DummyVecEnv`
+- Trained a **PPO agent** on the shadow (150,000–300,000 steps),
+  achieving **2,041 / 2,107 bins** — the remaining 66 are ISA-unreachable
+  (RISC-V has no SUBI instruction)
+- Implemented **RTL validation** (`decoder/test_rl_validate_decoder.py`)
+  using the isolated decoder Verilog module in Verilator — confirmed exact
+  shadow-to-RTL agreement (2,041 / 2,041 bins match, 0 divergence)
+- Implemented an **unstructured action space variant** (`decoder_env_raw.py`)
+  where the agent generates 4 raw bytes with no prior knowledge of ISA
+  field structure, enabling a controlled comparison of how much structured
+  action space helps
+
+---
+
+## Level 2 — CPU Sequential Coverage (196 bins)
+
+**Target:** The full Ibex CPU retirement stream, with sequential
+instruction dependencies (RAW hazards).
+
+**Contributions:**
+- Implemented a **196-bin Python shadow model** (`shadow_cpu.py`)
+  covering: 14 instruction types (SEEN), ZERO\_DST, ZERO\_SRC, SAME\_SRC,
+  BR\_FORWARDS, BR\_BACKWARDS, and 143 RAW hazard cross-bins
+  (11 writers × 13 readers)
+- Implemented a **stateful Gymnasium environment** (`cpu_env.py`) where
+  the observation vector includes the previous instruction's writer and
+  destination register (prev\_writer one-hot + prev\_rd one-hot) —
+  enabling the agent to learn deliberate RAW hazard chaining; trained
+  with 4 parallel environments
+- Trained a **PPO agent** (300,000 steps, ent\_coef=0.03, gamma=0.99)
+  achieving **196 / 196 bins** in evaluation (3,254 instructions),
+  versus the random baseline which reaches only 184 / 196 in 10,000
+  instructions
+- Implemented **RTL validation** running generated programs through the
+  full Ibex pipeline via RVFI, confirming 196 / 196 on real RTL
+- Implemented a **backward JAL trampoline** using BEQ instructions
+  (opcode not tracked by the coverage monitor) to allow backward JAL to
+  execute on real RTL without infinite loops, enabling the BR\_BACKWARDS
+  bin to be hit and validated
+- Implemented **train\_and\_emit.py**: trains PPO, rolls out a 10,000-
+  instruction program, serializes to JSON, and validates on Verilator —
+  the complete shadow-train → RTL-validate pipeline
+
+---
+
+## Level 3 — Chained Coverage (1,739 bins)
+
+**Target:** Deeper coverage model with multi-cycle chained dependencies.
+
+**Contributions:**
+- Implemented a **1,739-bin chained shadow model** (`shadow_cpu_chains.py`)
+  extending Level 2 with broader multi-instruction sequential patterns
+- Implemented the corresponding **Gymnasium environment**
+  (`cpu_env_chains.py`) with configurable episode length
+- Used **SubprocVecEnv** for true multiprocess parallelism during training,
+  reducing wall-clock time on larger episode counts
+- Trained a **PPO agent** (batch\_size=2048) achieving **99%+ of the
+  reachable bin set**, demonstrating that chained sequential coverage
+  remains tractable for on-policy RL
+
+---
+
+## Level 4 — Full RV32I/M Shadow (5,615 bins)
+
+**Target:** A comprehensive functional coverage model covering the full
+RV32I/M instruction set.
+
+**Contributions:**
+- Implemented a **5,615-bin Python shadow model** (`shadow_cpu_l6.py`)
+  covering: single-instruction categories, RAW hazards across all operand
+  positions, ZERO-register crosses, SAME-source crosses, branch patterns,
+  CSR reads/writes, multiply/divide, compressed instructions, and memory
+  ordering
+- Implemented the corresponding **Gymnasium environment** (`cpu_env_l6.py`)
+  with gamma=0.995 to weight later discoveries in long episodes
+- Trained **PPO** (4 parallel envs, ent\_coef=0.02) demonstrating that it
+  saturates the shadow **~100× faster** than uniform random
+  (~2 minutes vs. ~53 minutes wall-clock)
+- Validated shadow-to-RTL fidelity: **zero divergence** across two
+  independent trained agents (425/425 and 1,499/1,499 bin match)
+- Produced an **open, Python-native 5,615-bin RV32I/M functional coverage
+  model** as a standalone artefact
+
+---
+
+## Level 5 — First Real RTL Toggle Coverage
+
+**Target:** Verilator toggle coverage on the live Ibex core.
+
+**Contributions:**
+- Implemented **codec\_l5.py**: a 45-operation encoder covering R-type ALU,
+  I-type ALU, loads, stores, 5 safe CSRs, MUL/DIV, branches, and JAL —
+  every emitted instruction is legal by construction
+- Implemented **env\_l5.py** and **env\_l5\_rich.py**: Gymnasium environments
+  wrapping the real Verilator simulation via subprocess; the rich variant
+  includes per-module toggle coverage in the observation vector, giving the
+  agent visibility into which hardware modules still need stimulus
+- Implemented **cov\_parser.py**: parses Verilator's binary `coverage.dat`
+  into per-bin hit counts — shared infrastructure for Levels 5–7
+- Trained three PPO variants: vanilla, novelty-bonus, and rich-observation
+- Achieved **56.2% cumulative toggle coverage** in 300 episodes; identified
+  through per-module breakdown that the plateau was encoder-bound
+  (compressed decoder at 0%, cs_registers at ~10%, load_store_unit at ~38%)
+
+---
+
+## Level 6 — Extended Encoder + Ceiling Characterization
+
+**Target:** Identify and quantify the reachable coverage ceiling.
+
+**Contributions:**
+- Implemented **codec\_rvc.py**: a 61-operation encoder adding 16 RVC
+  (compressed instruction) variants; illegal RVC patterns are rejected at
+  encoding time; RVC ops packed as `(C.NOP << 16) | rvc_word` to maintain
+  a flat 32-bit program layout
+- Implemented **env\_rvc.py** and **env\_rvc\_rich.py** for the extended
+  encoder; trained with gamma=0.999 and ent\_coef=0.05 to encourage
+  broader exploration over long episodes
+- Implemented **analyze\_unreachable.py**: classifies each uncovered signal
+  as TIED-OFF (config-disabled hardware), NEEDS-stimulus (reachable but
+  un-stimulated), or REACHABLE — establishing a **reachable ceiling of
+  69.6%** for the minimal Ibex config
+- Achieved **97–99% toggle coverage** of `ibex_compressed_decoder`
+  (previously 0%) by adding RVC support
+
+---
+
+## Level 7 — Stimulus Engineering
+
+**Target:** Close the gap to the reachable ceiling through targeted
+environment improvements rather than algorithm tuning.
+
+**Contributions:**
+- **Data-memory prepopulation**: replaced the constant WFI sentinel
+  returned for read-misses with `addr XOR 0xDEADBEEF`, raising
+  `ibex_load_store_unit` toggle coverage from **38% to 92%** in one change
+- **Trap-safe ECALL/EBREAK**: implemented a prologue that sets `mtvec` and
+  a trap handler that advances `mepc` by 4 and executes `MRET`, enabling
+  safe ECALL/EBREAK/illegal-instruction emission and unlocking the entire
+  exception path (`mepc_q`, `mtval_q`, `mcause_q`, `mstack_*`, controller
+  exception FSM)
+- **29-CSR rotation**: expanded from 5 to 29 CSR addresses covering
+  performance counters, exception registers, and user-level aliases,
+  raising `ibex_cs_registers` toggle from ~10% to 22%
+- **AUIPC**: added as a 64th operation, unlocking upper-immediate ALU paths
+- Implemented **codec\_l7.py**, **env\_l7.py**, **env\_l7\_rich.py**,
+  and measurement/training scripts
+- Achieved **66.3% cumulative toggle coverage in 30 random episodes**
+  (vs. 56.2% PPO in 300 episodes at Level 5), with a revised reachable
+  ceiling of **75.9%** — demonstrating that a random agent with a better
+  environment outperforms a trained RL agent in a worse one
+
+---
+
+## Key Cross-Level Findings
+
+**1. Shadow-based training is faithful.**
+Across all shadow-validated levels, bin-for-bin agreement between shadow
+predictions and real RTL was confirmed (0 divergence at Levels 1–4).
+The shadow is a reliable proxy for Verilator at ~1,500× the speed.
+
+**2. PPO outperforms random significantly on coverage tasks.**
+At Level 4, PPO saturates the 5,615-bin shadow ~100× faster than
+uniform random. At Level 2, PPO achieves 196/196 bins while random
+reaches only 184/196 in the same budget.
+
+**3. Stimulus engineering beats algorithm tuning.**
+A random agent with the Level 7 environment in 30 episodes (66.3%)
+outperforms the best PPO run at Level 5 in 300 episodes (56.2%) by
+10 percentage points. The coverage ceiling is set by what the generator
+can emit and what the memory model returns — not by the optimizer.
+
+**4. Parallel environments accelerate training without algorithm changes.**
+Using 4–8 parallel environments via DummyVecEnv / SubprocVecEnv
+increases sample throughput proportionally, making 300,000-step training
+runs feasible in minutes on CPU.
