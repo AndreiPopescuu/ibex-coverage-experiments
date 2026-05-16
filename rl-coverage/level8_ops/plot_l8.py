@@ -22,6 +22,7 @@ def main():
     l8_rand = _load(THIS / "l8_random_baseline.npz")
     l8_dyn  = _load(THIS / "l8_dynamic_ppo_scratch.npz")
     l8_v2   = _load(THIS / "l8_dynamic_ppo_v2_curve.npz")
+    l8_v3   = _load(THIS / "l8_v3_ppo_curve.npz")
 
     YLIM = (58, 78)
 
@@ -48,7 +49,7 @@ def main():
     ax1.set_ylim(YLIM)
 
     # ── Subplot 2: PPO (x = total steps pentru comparație corectă) ─────────
-    ax2.set_title("PPO: L7 vs L8 v1 vs L8 v2\n(x = total steps simulați)", fontsize=12, fontweight="bold")
+    ax2.set_title("PPO: L7 vs L8 v1 vs L8 v2 vs L8 v3\n(x = total steps simulați)", fontsize=12, fontweight="bold")
 
     if l7_ppo:
         steps = l7_ppo["ep"] * 1024
@@ -61,6 +62,12 @@ def main():
         ax2.plot(steps / 1000, l8_dyn["cum_pct"],
                  label=f"L8 PPO dynamic weights\n(300 ep × 1024 steps)\n→ {l8_dyn['cum_pct'][-1]:.2f}%",
                  color="#e377c2", linewidth=2.5, marker="s", markersize=3)
+
+    if l8_v3:
+        steps = l8_v3["ep"] * 256
+        ax2.plot(steps / 1000, l8_v3["cum_pct"],
+                 label=f"L8 PPO v3\n(obs 32 dims + action hist)\n→ {l8_v3['cum_pct'][-1]:.2f}%",
+                 color="#d62728", linewidth=2.5, marker="D", markersize=3)
 
     if l8_v2:
         steps = l8_v2["ep"] * 256
