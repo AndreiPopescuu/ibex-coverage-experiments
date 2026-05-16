@@ -14,7 +14,7 @@ from env_l9_v2 import IbexL9V2Env
 from codec_l9 import N_OPS, IMM_BUCKETS
 
 EP_STEPS   = 256
-N_EPISODES = 30
+N_EPISODES = 1200
 OUT_NPZ    = Path(__file__).parent / "l9_random_baseline.npz"
 
 
@@ -51,7 +51,7 @@ def main():
 
     print(f"\nSaved → {OUT_NPZ.name}")
     print(f"L9 random final cum: {cum_pcts[-1]:.2f}%")
-    print(f"L8 random baseline:   66.07%  (referință)")
+    print(f"L8 random baseline:   66.07%  (30 ep × 256 steps, referință)")
 
 
 if __name__ == "__main__":
