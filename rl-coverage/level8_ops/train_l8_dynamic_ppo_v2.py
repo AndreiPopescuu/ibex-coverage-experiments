@@ -30,10 +30,14 @@ except ImportError:
 
 
 class Log(BaseCallback):
-    def __init__(self, baseline_pct: float):
+    def __init__(self, baseline_pct: float, saturation_window: int = 50,
+                 save_hits_path: str | None = None):
         super().__init__()
-        self.baseline_pct = baseline_pct
-        self.history = []
+        self.baseline_pct      = baseline_pct
+        self.saturation_window = saturation_window
+        self.save_hits_path    = save_hits_path
+        self.history           = []
+        self._zero_streak      = 0
 
     def _on_step(self):
         info = self.locals.get("infos", [{}])[0]
@@ -52,7 +56,24 @@ class Log(BaseCallback):
         print(f"  ep {ep:>4} | ep {info['ep_pct']:>5.2f}% | cum {cum:>5.2f}% | "
               f"new {new:>4} | Δ {delta:>+6.2f}pp | worst: {worst} {worst_p:.1f}%",
               flush=True)
+
+        # Saturație: N episoade consecutive fără niciun hit nou
+        self._zero_streak = self._zero_streak + 1 if new == 0 else 0
+        if self._zero_streak >= self.saturation_window:
+            print(f"\n[!] Saturație detectată: {self.saturation_window} ep fără hits noi. Opresc.", flush=True)
+            self._save_hits()
+            return False
+
         return True
+
+    def _save_hits(self):
+        if not self.save_hits_path:
+            return
+        env = self.training_env.envs[0]
+        with open(self.save_hits_path, "wb") as f:
+            pickle.dump(env._cum_hits, f)
+        cum = self.history[-1]["cum_pct"] if self.history else 0
+        print(f"  Hits salvate → {self.save_hits_path}  ({cum:.2f}%)", flush=True)
 
 
 def main():
@@ -64,7 +85,11 @@ def main():
     ap.add_argument("--seed",     type=int, default=42)
     ap.add_argument("--hits",     default=None,
                     help="Fișier .pkl cu hits pre-acumulate (opțional)")
-    ap.add_argument("--out",      default="l8_dynamic_ppo_v2_curve.npz")
+    ap.add_argument("--out",       default="l8_dynamic_ppo_v2_curve.npz")
+    ap.add_argument("--save-hits", default="l8_final_hits.pkl",
+                    help="Salvează hits finale în acest fișier (pentru pipeline L9)")
+    ap.add_argument("--saturation", type=int, default=50,
+                    help="Oprește după N episoade consecutive fără hits noi")
     args = ap.parse_args()
 
     print("=" * 64)
@@ -110,7 +135,9 @@ def main():
         verbose=0, seed=args.seed, device="cpu",
     )
 
-    cb = Log(baseline_pct)
+    cb = Log(baseline_pct,
+             saturation_window=args.saturation,
+             save_hits_path=args.save_hits)
     t0 = time.time()
     model.learn(total_timesteps=args.episodes * args.steps, callback=cb)
     elapsed = time.time() - t0
@@ -132,6 +159,7 @@ def main():
         ep_pct = np.array([h["ep_pct"]  for h in cb.history])
         np.savez(args.out, ep=eps, cum_pct=cum, ep_pct=ep_pct)
         print(f"  Saved → {args.out}")
+        cb._save_hits()
 
 
 if __name__ == "__main__":
