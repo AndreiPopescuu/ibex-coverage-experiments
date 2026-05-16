@@ -13,6 +13,7 @@ Features:
 Usage:
     python train_l9_v2_ppo.py --episodes 3600
     python train_l9_v2_ppo.py --resume --episodes 3600
+    python train_l9_v2_ppo.py --hits ../level8_ops/l8_pipeline_hits.pkl --episodes 3600
 """
 
 import argparse, pickle, signal, sys, time
@@ -111,6 +112,8 @@ def main():
     ap.add_argument("--out",      default="l9_v2_ppo_curve.npz")
     ap.add_argument("--resume",   action="store_true",
                     help="Continuă din ultimul checkpoint")
+    ap.add_argument("--hits",     default=None,
+                    help="Fișier .pkl cu hits pre-acumulate (ex: din L8)")
     ap.add_argument("--checkpoint-every", type=int, default=100)
     args = ap.parse_args()
 
@@ -122,6 +125,12 @@ def main():
     initial_hits    = set()
     episodes_done   = 0
     history_prev    = []
+
+    # ── Hits din fișier extern (pipeline L8 → L9) ─────────────────────────
+    if args.hits and Path(args.hits).exists():
+        with open(args.hits, "rb") as f:
+            initial_hits = pickle.load(f)
+        print(f"  Hits pre-încărcate din {args.hits}: {len(initial_hits):,}")
 
     if args.resume and CKPT_HITS.exists() and CKPT_MODEL.with_suffix(".zip").exists():
         with open(CKPT_HITS, "rb") as f:
