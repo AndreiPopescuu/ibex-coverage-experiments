@@ -89,6 +89,8 @@ class Log(BaseCallback):
         self.model.save(str(CKPT_MODEL))
 
         env = self.training_env.envs[0]
+        if hasattr(env, "env"):
+            env = env.env
         with open(CKPT_HITS, "wb") as f:
             pickle.dump(env._cum_hits, f)
 
