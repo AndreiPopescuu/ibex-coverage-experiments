@@ -117,6 +117,8 @@ def main():
     ap.add_argument("--hits",     default=None,
                     help="Fișier .pkl cu hits pre-acumulate (ex: din L8)")
     ap.add_argument("--checkpoint-every", type=int, default=100)
+    ap.add_argument("--ent-coef", type=float, default=None,
+                    help="Suprascrie ent_coef (ex: 0.15 pentru mai multă explorare)")
     args = ap.parse_args()
 
     print("=" * 64)
@@ -161,7 +163,8 @@ def main():
     print(f"  Episoade totale: {args.episodes}  (rămase: {remaining})")
     print(f"  Pași/episod:     {args.steps}")
     print(f"  Obs dims:        {N_OBS}")
-    print(f"  Net arch:        [512, 256]  ent_coef=0.08")
+    ent_coef = args.ent_coef if args.ent_coef is not None else 0.08
+    print(f"  Net arch:        [512, 256]  ent_coef={ent_coef}")
     print(f"  Baseline:        {baseline_pct:.2f}%")
     print(f"  Checkpoint:      la fiecare {args.checkpoint_every} ep → {CKPT_MODEL}.zip")
     print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'new':>5} | {'Δbaseline':>10} | worst module")
@@ -175,6 +178,8 @@ def main():
 
     if args.resume and CKPT_MODEL.with_suffix(".zip").exists():
         model = PPO.load(str(CKPT_MODEL), env=env)
+        if args.ent_coef is not None:
+            model.ent_coef = args.ent_coef
         print(f"  Model încărcat din {CKPT_MODEL}.zip")
     else:
         model = PPO(
@@ -184,7 +189,7 @@ def main():
             batch_size=64,
             n_epochs=4,
             gamma=0.999,
-            ent_coef=0.08,
+            ent_coef=ent_coef,
             policy_kwargs=dict(net_arch=[512, 256]),
             verbose=0, seed=args.seed, device="cpu",
         )
