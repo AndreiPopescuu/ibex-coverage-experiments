@@ -36,7 +36,9 @@ from pathlib import Path
 from enum import IntEnum
 
 _L8 = Path(__file__).resolve().parent.parent / "level8_ops"
+_L7 = Path(__file__).resolve().parent.parent / "level7_stimulus"
 sys.path.insert(0, str(_L8))
+sys.path.insert(0, str(_L7))
 
 from codec_l8 import (  # noqa: E402
     Op as L8Op,
@@ -45,6 +47,30 @@ from codec_l8 import (  # noqa: E402
     IMM_BUCKET_VALUES,
     encode as l8_encode,
 )
+from codec_l7 import L7_SAFE_CSRS  # noqa: E402
+
+# Extended CSR list: L7 safe set + interrupt/trap control registers
+L9_CSRS = L7_SAFE_CSRS + [
+    0x300,  # mstatus  — MIE/MPIE/MPP fields
+    0x304,  # mie      — machine interrupt enable
+    0x305,  # mtvec    — trap vector base
+]
+
+_CSR_F3 = {27: 0b001, 28: 0b010, 29: 0b011}   # CSRRW, CSRRS, CSRRC
+_CSRI_F3 = {66: 0b101, 67: 0b110, 68: 0b111}  # CSRRWI, CSRRSI, CSRRCI
+
+
+def _encode_csr_l9(funct3: int, rd: int, rs1: int, imm_bucket: int) -> int:
+    csr_idx = (imm_bucket * 7 + rs1) % len(L9_CSRS)
+    csr = L9_CSRS[csr_idx]
+    return (csr << 20) | ((rs1 & 0x1F) << 15) | (funct3 << 12) | ((rd & 0x1F) << 7) | 0b1110011
+
+
+def _encode_csri_l9(funct3: int, rd: int, rs1: int, imm_bucket: int) -> int:
+    uimm = (imm_bucket * 3 + (rs1 % 5)) & 0x1F
+    csr_idx = (imm_bucket * 7 + (rs1 % 5)) % len(L9_CSRS)
+    csr = L9_CSRS[csr_idx]
+    return (csr << 20) | ((uimm & 0x1F) << 15) | (funct3 << 12) | ((rd & 0x1F) << 7) | 0b1110011
 
 _C_NOP = 0x0001  # c.nop = c.addi x0, 0
 
@@ -217,6 +243,12 @@ def _encode_c_jalr(rs1: int) -> int:
 # ── Encoder principal ─────────────────────────────────────────────────────────
 
 def encode(op_i: int, rd: int, rs1: int, rs2: int, imm_bucket: int) -> int:
+    # CSR register ops — use extended L9_CSRS list
+    if op_i in _CSR_F3:
+        return _encode_csr_l9(_CSR_F3[op_i], rd, rs1, imm_bucket)
+    # CSR immediate ops — use extended L9_CSRS list
+    if op_i in _CSRI_F3:
+        return _encode_csri_l9(_CSRI_F3[op_i], rd, rs1, imm_bucket)
     if op_i == int(Op.MRET):
         return _MRET
     if op_i == int(Op.WFI):
