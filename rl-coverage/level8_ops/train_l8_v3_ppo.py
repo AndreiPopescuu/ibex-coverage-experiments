@@ -68,7 +68,7 @@ class Log(BaseCallback):
     def _save_hits(self):
         if not self.save_hits_path:
             return
-        env = self.training_env.envs[0]
+        env = self.training_env.envs[0].unwrapped
         with open(self.save_hits_path, "wb") as f:
             pickle.dump(env._cum_hits, f)
         cum = self.history[-1]["cum_pct"] if self.history else 0
