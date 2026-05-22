@@ -1,7 +1,8 @@
-"""env_l10_focused.py — L10 env cu action space redus (22 ops).
+"""env_l10_focused.py — L10 env v2.
 
-Identic cu env_l10.py dar folosește codec_l10_focused (22 ops în loc de 87).
-Probabilitatea de a alege un op nou: 18.2% vs 4.8% la L9.
+Schimbări față de v1:
+  - action_space include csr_bucket (agent alege direct ce CSR accesează)
+  - Reward = toggle_shaped + 0.3 * branch_new (branch coverage recompensat)
 """
 
 import os, sys, re, json, subprocess
@@ -22,7 +23,7 @@ PROGRAM_JSON = "/tmp/rl_l10_focused.json"
 sys.path.insert(0, str(L5))
 import cov_parser
 
-from codec_l10_focused import N_OPS, IMM_BUCKETS, emit_program
+from codec_l10_focused import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, emit_program
 
 MODULES = [
     "ibex_core", "ibex_cs_registers", "ibex_top", "ibex_if_stage",
@@ -38,6 +39,7 @@ N_MODULES   = len(MODULES)
 HIST_LEN    = 4
 N_OBS       = 3 + N_MODULES + HIST_LEN  # = 32
 MAX_EP_NORM = 500.0
+BRANCH_COEF = 0.3  # weight pentru branch reward față de toggle reward
 
 
 def _module_of(key: str) -> str | None:
@@ -81,7 +83,9 @@ class IbexL10FocusedEnv(gym.Env):
         super().__init__()
         self.episode_steps = episode_steps
 
-        self.action_space = spaces.MultiDiscrete([N_OPS, 32, 32, 32, IMM_BUCKETS])
+        self.action_space = spaces.MultiDiscrete(
+            [N_OPS, 32, 32, 32, IMM_BUCKETS, N_CSR_BUCKETS]
+        )
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(N_OBS,), dtype=np.float32)
 
@@ -90,7 +94,8 @@ class IbexL10FocusedEnv(gym.Env):
         self._n_episodes: int = 0
         self._total_tog:  int = 1
 
-        self._cum_hits:   set = set(initial_hits) if initial_hits else set()
+        self._cum_hits:        set = set(initial_hits) if initial_hits else set()
+        self._cum_branch_hits: set = set()
         self._key_to_mod: dict = {}
 
         self._mod_covered   = {m: 0 for m in MODULES}
@@ -146,11 +151,19 @@ class IbexL10FocusedEnv(gym.Env):
                 toggle_covered, toggle_total = summary.by_kind["toggle"]
                 self._total_tog = max(toggle_total, 1)
 
-                prefix = "\x01page\x02v_toggle/"
-                ep_hits  = {k for k, v in summary.points.items()
-                            if v > 0 and prefix in ("\x01" + k)}
-                new_hits = ep_hits - self._cum_hits
-                self._cum_hits |= ep_hits
+                tog_prefix    = "\x01page\x02v_toggle/"
+                branch_prefix = "\x01page\x02v_branch/"
+
+                ep_hits = {k for k, v in summary.points.items()
+                           if v > 0 and tog_prefix in ("\x01" + k)}
+                ep_branch_hits = {k for k, v in summary.points.items()
+                                  if v > 0 and branch_prefix in ("\x01" + k)}
+
+                new_hits        = ep_hits - self._cum_hits
+                new_branch_hits = ep_branch_hits - self._cum_branch_hits
+
+                self._cum_hits        |= ep_hits
+                self._cum_branch_hits |= ep_branch_hits
 
                 for key in ep_hits:
                     if key not in self._key_to_mod:
@@ -174,29 +187,33 @@ class IbexL10FocusedEnv(gym.Env):
                     if mod and mod in self._mod_covered:
                         self._mod_covered[mod] += 1
 
-                shaped_reward = sum(
+                shaped_toggle = sum(
                     self._dynamic_weight(self._key_to_mod.get(k))
                     for k in new_hits
                 )
-                reward = shaped_reward
+                branch_reward = BRANCH_COEF * len(new_branch_hits)
+                reward = shaped_toggle + branch_reward
 
                 cum_pct   = 100.0 * len(self._cum_hits) / self._total_tog
                 worst_mod = min(MODULES,
                                 key=lambda m: self._mod_covered[m] / max(self._mod_total[m], 1))
+                branch_total = max(summary.by_kind["branch"][1], 1)
                 info.update({
-                    "ep_pct":          100.0 * toggle_covered / self._total_tog,
-                    "cum_covered":     len(self._cum_hits),
-                    "cum_pct":         cum_pct,
-                    "new_hits_vs_cum": len(new_hits),
-                    "shaped_reward":   shaped_reward,
-                    "branch_pct":      100.0 * summary.by_kind["branch"][0] /
-                                       max(summary.by_kind["branch"][1], 1),
-                    "worst_mod":       worst_mod,
-                    "worst_pct":       100.0 * self._mod_covered[worst_mod] /
-                                       max(self._mod_total[worst_mod], 1),
-                    "mod_coverage":    {m: self._mod_covered[m] /
-                                        max(self._mod_total[m], 1)
-                                        for m in MODULES},
+                    "ep_pct":           100.0 * toggle_covered / self._total_tog,
+                    "cum_covered":      len(self._cum_hits),
+                    "cum_pct":          cum_pct,
+                    "new_hits_vs_cum":  len(new_hits),
+                    "new_branch_hits":  len(new_branch_hits),
+                    "cum_branch_hits":  len(self._cum_branch_hits),
+                    "shaped_reward":    shaped_toggle,
+                    "branch_reward":    branch_reward,
+                    "branch_pct":       100.0 * summary.by_kind["branch"][0] / branch_total,
+                    "worst_mod":        worst_mod,
+                    "worst_pct":        100.0 * self._mod_covered[worst_mod] /
+                                        max(self._mod_total[worst_mod], 1),
+                    "mod_coverage":     {m: self._mod_covered[m] /
+                                         max(self._mod_total[m], 1)
+                                         for m in MODULES},
                 })
             self._n_episodes += 1
 

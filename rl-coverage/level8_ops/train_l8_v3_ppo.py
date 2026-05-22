@@ -20,7 +20,7 @@ THIS = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS.parent / "level5_real_rtl"))
 
 from env_l8_v3 import IbexL8V3Env, MODULES
-from directed_l8 import run_raw
+from utils_l8 import run_raw
 
 try:
     from stable_baselines3 import PPO

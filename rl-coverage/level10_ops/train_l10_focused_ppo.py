@@ -1,4 +1,9 @@
-"""train_l10_focused_ppo.py — PPO pe L10 focalizat (22 ops), start din L9 hits.
+"""train_l10_focused_ppo.py — PPO pe L10 focalizat v2.
+
+Schimbări față de v1:
+  - action space include csr_bucket (6 dims în loc de 5)
+  - reward include branch coverage (0.3×)
+  - checkpointul v1 e incompatibil — pornește din L9 hits
 
 Usage:
     python train_l10_focused_ppo.py --hits ../level9_ops/l9_v2_checkpoint_hits.pkl --episodes 3600
@@ -47,18 +52,20 @@ class Log(BaseCallback):
         if "cum_pct" not in info:
             return True
 
-        ep      = len(self.history) + 1
-        cum     = info["cum_pct"]
-        new     = info.get("new_hits_vs_cum", 0)
-        worst   = info.get("worst_mod", "?")
-        worst_p = info.get("worst_pct", 0.0)
+        ep         = len(self.history) + 1
+        cum        = info["cum_pct"]
+        new_tog    = info.get("new_hits_vs_cum", 0)
+        new_branch = info.get("new_branch_hits", 0)
+        worst      = info.get("worst_mod", "?")
+        worst_p    = info.get("worst_pct", 0.0)
         self.history.append({
             "ep": ep, "cum_pct": cum,
-            "ep_pct": info["ep_pct"], "new_hits": new,
+            "ep_pct": info["ep_pct"], "new_hits": new_tog,
         })
         delta = cum - self.baseline_pct
         print(f"  ep {ep:>4} | ep {info['ep_pct']:>5.2f}% | cum {cum:>5.2f}% | "
-              f"new {new:>4} | Δ {delta:>+6.2f}pp | worst: {worst} {worst_p:.1f}%",
+              f"tog+{new_tog:<4} br+{new_branch:<3} | Δ {delta:>+6.2f}pp | "
+              f"worst: {worst} {worst_p:.1f}%",
               flush=True)
 
         if ep % self.checkpoint_every == 0:
@@ -99,9 +106,11 @@ def main():
     ap.add_argument("--ent-coef", type=float, default=None)
     args = ap.parse_args()
 
-    print("=" * 64)
-    print(f"L10 Focused PPO — 22 ops, obs {N_OBS} dims, {args.steps} pași/episod")
-    print("=" * 64)
+    print("=" * 70)
+    print(f"L10 Focused PPO v2 — 22 ops + csr_bucket, obs {N_OBS} dims, {args.steps} pași/ep")
+    print(f"  Action space: [22 ops, 32 rd, 32 rs1, 32 rs2, 5 imm, {33} csr_bucket]")
+    print(f"  Reward: toggle (weighted) + {0.3}× branch")
+    print("=" * 70)
 
     initial_hits  = set()
     episodes_done = 0
@@ -126,22 +135,22 @@ def main():
         print(f"  Resume din ep {episodes_done} — {len(initial_hits):,} hits")
     else:
         if args.resume:
-            print("  [!] Niciun checkpoint focused găsit — pornesc de la zero")
+            print("  [!] Niciun checkpoint găsit — pornesc de la zero")
 
     remaining = args.episodes - episodes_done
     if remaining <= 0:
         print(f"  Deja {episodes_done} episoade, nimic de rulat."); return
 
-    baseline_pct = 100. * len(initial_hits) / 20024 if initial_hits else 0.0
-    ent_coef = args.ent_coef if args.ent_coef is not None else 0.08
+    total_tog    = 20023
+    baseline_pct = 100. * len(initial_hits) / total_tog if initial_hits else 0.0
+    ent_coef     = args.ent_coef if args.ent_coef is not None else 0.08
 
     print(f"  Episoade totale: {args.episodes}  (rămase: {remaining})")
     print(f"  Pași/episod:     {args.steps}")
     print(f"  Net arch:        [512, 256]  ent_coef={ent_coef}")
     print(f"  Baseline (L9):   {baseline_pct:.2f}%")
-    print(f"  Prob op nou:     18.2%  (vs 4.8% la L9 cu 83 ops)")
-    print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'new':>5} | {'Δbaseline':>10} | worst module")
-    print("-" * 72)
+    print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'tog+':>5} {'br+':>4} | {'Δbaseline':>10} | worst module")
+    print("-" * 75)
 
     env = IbexL10FocusedEnv(
         episode_steps=args.steps,
@@ -150,11 +159,18 @@ def main():
     )
 
     if args.resume and CKPT_MODEL.with_suffix(".zip").exists():
-        model = PPO.load(str(CKPT_MODEL), env=env)
-        if args.ent_coef is not None:
-            model.ent_coef = args.ent_coef
-        print(f"  Model încărcat din {CKPT_MODEL}.zip")
+        try:
+            model = PPO.load(str(CKPT_MODEL), env=env)
+            if args.ent_coef is not None:
+                model.ent_coef = args.ent_coef
+            print(f"  Model încărcat din {CKPT_MODEL}.zip")
+        except Exception as e:
+            print(f"  [!] Checkpoint incompatibil ({e}) — model nou")
+            model = None
     else:
+        model = None
+
+    if model is None:
         model = PPO(
             "MlpPolicy", env,
             learning_rate=3e-4,
@@ -181,10 +197,9 @@ def main():
         best  = max(h["cum_pct"] for h in all_history)
         final = all_history[-1]["cum_pct"]
         print(f"\nRezultate finale:")
-        print(f"  L10 Focused best:  {best:.2f}%")
-        print(f"  L10 Focused final: {final:.2f}%")
-        print(f"  L9 ceiling:       ~71.97%  (referință)")
-        print(f"  L8 ceiling:       ~74.72%  (referință)")
+        print(f"  L10 v2 best:  {best:.2f}%")
+        print(f"  L10 v2 final: {final:.2f}%")
+        print(f"  L9 ceiling:  ~71.97%  (referință)")
 
         eps    = np.array([h["ep"]      for h in all_history])
         cum    = np.array([h["cum_pct"] for h in all_history])
