@@ -61,20 +61,20 @@ L10_CSRS = L9_CSRS + [
     0x344,  # mip — machine interrupt pending
 ]
 
+N_CSR_BUCKETS = len(L10_CSRS)  # agent alege direct indexul în pool
+
 _CSR_F3  = {27: 0b001, 28: 0b010, 29: 0b011}   # CSRRW, CSRRS, CSRRC
 _CSRI_F3 = {66: 0b101, 67: 0b110, 68: 0b111}   # CSRRWI, CSRRSI, CSRRCI
 
 
-def _encode_csr_l10(funct3: int, rd: int, rs1: int, imm_bucket: int) -> int:
-    csr_idx = (imm_bucket * 7 + rs1) % len(L10_CSRS)
-    csr = L10_CSRS[csr_idx]
+def _encode_csr_l10(funct3: int, rd: int, rs1: int, csr_bucket: int) -> int:
+    csr = L10_CSRS[csr_bucket % len(L10_CSRS)]
     return (csr << 20) | ((rs1 & 0x1F) << 15) | (funct3 << 12) | ((rd & 0x1F) << 7) | 0b1110011
 
 
-def _encode_csri_l10(funct3: int, rd: int, rs1: int, imm_bucket: int) -> int:
-    uimm = (imm_bucket * 3 + (rs1 % 5)) & 0x1F
-    csr_idx = (imm_bucket * 7 + (rs1 % 5)) % len(L10_CSRS)
-    csr = L10_CSRS[csr_idx]
+def _encode_csri_l10(funct3: int, rd: int, rs1: int, csr_bucket: int) -> int:
+    uimm = rs1 & 0x1F
+    csr  = L10_CSRS[csr_bucket % len(L10_CSRS)]
     return (csr << 20) | ((uimm & 0x1F) << 15) | (funct3 << 12) | ((rd & 0x1F) << 7) | 0b1110011
 
 
@@ -149,23 +149,38 @@ _SW_MISALIGN = 0x000020A3
 _LH_MISALIGN = 0x00101003
 
 
-def encode(op_i: int, rd: int, rs1: int, rs2: int, imm_bucket: int) -> int:
-    # CSR ops — folosesc L10_CSRS (include mip)
+def _encode_lw_misalign(rs1: int) -> int:
+    return (1 << 20) | ((rs1 & 0x1F) << 15) | (0b010 << 12) | 0b0000011
+
+def _encode_sw_misalign(rs1: int) -> int:
+    return ((rs1 & 0x1F) << 15) | (0b010 << 12) | (1 << 7) | 0b0100011
+
+def _encode_lh_misalign(rs1: int) -> int:
+    return (1 << 20) | ((rs1 & 0x1F) << 15) | (0b001 << 12) | 0b0000011
+
+
+def encode(op_i: int, rd: int, rs1: int, rs2: int, imm_bucket: int, csr_bucket: int = 0) -> int:
+    # CSR ops — agent alege direct via csr_bucket
     if op_i in _CSR_F3:
-        return _encode_csr_l10(_CSR_F3[op_i], rd, rs1, imm_bucket)
+        return _encode_csr_l10(_CSR_F3[op_i], rd, rs1, csr_bucket)
     if op_i in _CSRI_F3:
-        return _encode_csri_l10(_CSRI_F3[op_i], rd, rs1, imm_bucket)
-    # Ops noi L10
+        return _encode_csri_l10(_CSRI_F3[op_i], rd, rs1, csr_bucket)
+    # Ops noi L10 — misalign cu rs1 configurat
     if op_i == int(Op.ILLEGAL_INSN):
         return _ILLEGAL_INSN
     if op_i == int(Op.LW_MISALIGN):
-        return _LW_MISALIGN
+        return _encode_lw_misalign(rs1)
     if op_i == int(Op.SW_MISALIGN):
-        return _SW_MISALIGN
+        return _encode_sw_misalign(rs1)
     if op_i == int(Op.LH_MISALIGN):
-        return _LH_MISALIGN
+        return _encode_lh_misalign(rs1)
     # Tot ce e < 83 e op L9
     return l9_encode(op_i, rd, rs1, rs2, imm_bucket)
+
+
+def emit_program(actions):
+    nop = l9_encode(10, 0, 0, 0, 2)  # ADDI x0, x0, 0
+    return [encode(*a) for a in actions] + [nop] * 16
 
 
 def emit_program(actions):

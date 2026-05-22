@@ -1,19 +1,13 @@
-"""train_l10_ppo.py — PPO pe L10 (87 ops), continuare din hits L9.
+"""train_l10_ppo.py — PPO pe L10 v2 (87 ops + csr_bucket).
 
-Configurație identică cu L9 V2:
-  - IbexL10Env: 87 ops, obs 32 dims
-  - net_arch: [512, 256]
-  - ent_coef: 0.08 (default)
+Față de v1:
+  - action_space include csr_bucket (6 dims)
+  - reward = episode_base + toggle_shaped + 0.3 * branch
+  - key normalization pentru compatibilitate între mașini
 
 Usage:
-    # continuare din hits L9 (pipeline normal):
-    python train_l10_ppo.py --hits ../level9_ops/l9_v2_checkpoint_hits.pkl --episodes 3600
-
-    # resume din checkpoint L10:
-    python train_l10_ppo.py --resume --episodes 3600
-
-    # cu mai multă explorare:
-    python train_l10_ppo.py --hits ../level9_ops/l9_v2_checkpoint_hits.pkl --episodes 3600 --ent-coef 0.15
+    python train_l10_ppo.py --hits ../level9_ops/l9_v2_checkpoint_hits.pkl --episodes 3600 --steps 512
+    python train_l10_ppo.py --resume --episodes 3600 --steps 512
 """
 
 import argparse, pickle, signal, sys, time
@@ -71,9 +65,10 @@ class Log(BaseCallback):
             "ep": ep, "cum_pct": cum,
             "ep_pct": info["ep_pct"], "new_hits": new,
         })
-        delta = cum - self.baseline_pct
+        new_br = info.get("new_branch_hits", 0)
+        delta  = cum - self.baseline_pct
         print(f"  ep {ep:>4} | ep {info['ep_pct']:>5.2f}% | cum {cum:>5.2f}% | "
-              f"new {new:>4} | Δ {delta:>+6.2f}pp | worst: {worst} {worst_p:.1f}%",
+              f"tog+{new:<4} br+{new_br:<3} | Δ {delta:>+6.2f}pp | worst: {worst} {worst_p:.1f}%",
               flush=True)
 
         if ep % self.checkpoint_every == 0:
@@ -121,9 +116,11 @@ def main():
                     help="Suprascrie ent_coef (ex: 0.15 pentru mai multă explorare)")
     args = ap.parse_args()
 
-    print("=" * 64)
-    print(f"L10 PPO — obs {N_OBS} dims, {args.steps} pași/episod, 87 ops")
-    print("=" * 64)
+    print("=" * 70)
+    print(f"L10 PPO v2 — 87 ops + csr_bucket, obs {N_OBS} dims, {args.steps} pași/ep")
+    print(f"  Action space: [87 ops, 32 rd, 32 rs1, 32 rs2, 5 imm, {33} csr_bucket]")
+    print(f"  Reward: episode_base + toggle_shaped + 0.3× branch")
+    print("=" * 70)
 
     initial_hits  = set()
     episodes_done = 0
@@ -165,8 +162,8 @@ def main():
     print(f"  Net arch:        [512, 256]  ent_coef={ent_coef}")
     print(f"  Baseline (L9):   {baseline_pct:.2f}%")
     print(f"  Checkpoint:      la fiecare {args.checkpoint_every} ep → {CKPT_MODEL}.zip")
-    print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'new':>5} | {'Δbaseline':>10} | worst module")
-    print("-" * 72)
+    print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'tog+':>5} {'br+':>4} | {'Δbaseline':>10} | worst module")
+    print("-" * 75)
 
     env = IbexL10Env(
         episode_steps=args.steps,
@@ -175,11 +172,18 @@ def main():
     )
 
     if args.resume and CKPT_MODEL.with_suffix(".zip").exists():
-        model = PPO.load(str(CKPT_MODEL), env=env)
-        if args.ent_coef is not None:
-            model.ent_coef = args.ent_coef
-        print(f"  Model încărcat din {CKPT_MODEL}.zip")
+        try:
+            model = PPO.load(str(CKPT_MODEL), env=env)
+            if args.ent_coef is not None:
+                model.ent_coef = args.ent_coef
+            print(f"  Model încărcat din {CKPT_MODEL}.zip")
+        except Exception as e:
+            print(f"  [!] Checkpoint incompatibil ({e}) — model nou")
+            model = None
     else:
+        model = None
+
+    if model is None:
         model = PPO(
             "MlpPolicy", env,
             learning_rate=3e-4,
