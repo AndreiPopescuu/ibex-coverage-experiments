@@ -177,7 +177,7 @@ def main():
 
     if args.resume and CKPT_MODEL.with_suffix(".zip").exists():
         try:
-            model = PPO.load(str(CKPT_MODEL), env=env)
+            model = PPO.load(str(CKPT_MODEL), env=env, device="cpu")
             if args.ent_coef is not None:
                 model.ent_coef = args.ent_coef
             print(f"  Model încărcat din {CKPT_MODEL}.zip")
@@ -190,7 +190,7 @@ def main():
             src = src.with_suffix(".zip")
         if src.exists():
             try:
-                model = PPO.load(str(src.with_suffix("")), env=env)
+                model = PPO.load(str(src.with_suffix("")), env=env, device="cpu")
                 if args.ent_coef is not None:
                     model.ent_coef = args.ent_coef
                 print(f"  Weights încărcate din {src} — hits resetate (fresh coverage)")
