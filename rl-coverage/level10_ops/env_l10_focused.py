@@ -203,8 +203,9 @@ class IbexL10FocusedEnv(gym.Env):
                     self._dynamic_weight(self._key_to_mod.get(k))
                     for k in new_hits
                 )
-                branch_reward = BRANCH_COEF * len(new_branch_hits)
-                reward = shaped_toggle + branch_reward
+                branch_reward  = BRANCH_COEF * len(new_branch_hits)
+                episode_base   = len(ep_hits) / max(self._total_tog, 1)
+                reward = episode_base + shaped_toggle + branch_reward
 
                 cum_pct   = 100.0 * len(self._cum_hits) / self._total_tog
                 worst_mod = min(MODULES,
