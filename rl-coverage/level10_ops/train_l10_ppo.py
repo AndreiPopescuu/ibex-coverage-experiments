@@ -114,6 +114,8 @@ def main():
     ap.add_argument("--checkpoint-every", type=int, default=100)
     ap.add_argument("--ent-coef", type=float, default=None,
                     help="Suprascrie ent_coef (ex: 0.15 pentru mai multă explorare)")
+    ap.add_argument("--pretrained-model", default=None,
+                    help="Încarcă weights dintr-un model existent dar resetează hits (fresh coverage)")
     args = ap.parse_args()
 
     print("=" * 70)
@@ -171,6 +173,8 @@ def main():
         initial_hits=initial_hits,
     )
 
+    model = None
+
     if args.resume and CKPT_MODEL.with_suffix(".zip").exists():
         try:
             model = PPO.load(str(CKPT_MODEL), env=env)
@@ -180,8 +184,21 @@ def main():
         except Exception as e:
             print(f"  [!] Checkpoint incompatibil ({e}) — model nou")
             model = None
-    else:
-        model = None
+    elif args.pretrained_model:
+        src = Path(args.pretrained_model)
+        if not src.suffix:
+            src = src.with_suffix(".zip")
+        if src.exists():
+            try:
+                model = PPO.load(str(src.with_suffix("")), env=env)
+                if args.ent_coef is not None:
+                    model.ent_coef = args.ent_coef
+                print(f"  Weights încărcate din {src} — hits resetate (fresh coverage)")
+            except Exception as e:
+                print(f"  [!] Pretrained model incompatibil ({e}) — model nou")
+                model = None
+        else:
+            print(f"  [!] {src} nu există — model nou")
 
     if model is None:
         model = PPO(
