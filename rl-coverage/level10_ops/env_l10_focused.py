@@ -42,6 +42,13 @@ MAX_EP_NORM = 500.0
 BRANCH_COEF = 0.3  # weight pentru branch reward față de toggle reward
 
 
+_NORM_RE = re.compile(r"\x01n\x02[^\x01]+")
+
+def _norm_key(key: str) -> str:
+    """Scoate câmpul n (ID intern Verilator) din cheie — stabil între build-uri."""
+    return _NORM_RE.sub("", key)
+
+
 def _module_of(key: str) -> str | None:
     m = re.search(r"page\x02v_toggle/([^\x01]+)\x01", key)
     if not m:
@@ -94,7 +101,7 @@ class IbexL10FocusedEnv(gym.Env):
         self._n_episodes: int = 0
         self._total_tog:  int = 1
 
-        self._cum_hits:        set = set(initial_hits) if initial_hits else set()
+        self._cum_hits:        set = {_norm_key(k) for k in initial_hits} if initial_hits else set()
         self._cum_branch_hits: set = set()
         self._key_to_mod: dict = {}
 
@@ -154,9 +161,9 @@ class IbexL10FocusedEnv(gym.Env):
                 tog_prefix    = "\x01page\x02v_toggle/"
                 branch_prefix = "\x01page\x02v_branch/"
 
-                ep_hits = {k for k, v in summary.points.items()
+                ep_hits = {_norm_key(k) for k, v in summary.points.items()
                            if v > 0 and tog_prefix in ("\x01" + k)}
-                ep_branch_hits = {k for k, v in summary.points.items()
+                ep_branch_hits = {_norm_key(k) for k, v in summary.points.items()
                                   if v > 0 and branch_prefix in ("\x01" + k)}
 
                 new_hits        = ep_hits - self._cum_hits
