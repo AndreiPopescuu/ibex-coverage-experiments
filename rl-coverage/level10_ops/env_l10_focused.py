@@ -42,11 +42,16 @@ MAX_EP_NORM = 500.0
 BRANCH_COEF = 0.3  # weight pentru branch reward față de toggle reward
 
 
-_NORM_RE = re.compile(r"\x01n\x02[^\x01]+")
+_F_RE     = re.compile(r"\x01f\x02[^\x01]+")   # file path — diferit între mașini
+_N_RE     = re.compile(r"\x01n\x02[^\x01]+")   # ID intern Verilator — diferit între build-uri
+_H_DOT_RE = re.compile(r"(\x01h\x02)\.")       # punct în față la ierarhie (ex: .cocotb_ibex)
 
 def _norm_key(key: str) -> str:
-    """Scoate câmpul n (ID intern Verilator) din cheie — stabil între build-uri."""
-    return _NORM_RE.sub("", key)
+    """Cheie stabilă între mașini și build-uri: scoate f, n, și punctul din h."""
+    k = _F_RE.sub("", key)
+    k = _N_RE.sub("", k)
+    k = _H_DOT_RE.sub(r"\1", k)
+    return k
 
 
 def _module_of(key: str) -> str | None:
