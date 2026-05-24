@@ -66,21 +66,10 @@ TIED_OFF_SUBSTRINGS = [
     "multicycle_result",# rezultat CLMUL multicycle (nu MUL/DIV — acelea au multdiv_result)
     "zbe_result", "zbf_result", "zbp_result", "zbr_result", "zbt_result",
     "rev_result", "shuffle_result", "xperm_result",
-    # MHPMCounterNum = 0 → contoare de performanță dezactivate; ibex_counter e
-    # instanțiat și pentru mcycle/minstret (active), dar biții > ~10 nu pot
-    # togla în programe de 256 instrucțiuni (bit N necesită 2^N cicluri)
-    "counter[3", "counter[4", "counter[5", "counter[6",  # bits > 32 tied 0
-    # Biți înalți ai counter_val_o / counter_d / counter_upd / counter_load
-    # (semnal din ibex_counter, nu denumit "counter[N]")
-    # bit 20 → necesită 2^20 = 1M cicluri; imposibil cu ep. de 256 instrucțiuni
-    "counter_val_o[2", "counter_val_o[3", "counter_val_o[4",
-    "counter_val_o[5", "counter_val_o[6", "counter_val_o[7",
-    "counter_d[2",     "counter_d[3",     "counter_d[4",
-    "counter_d[5",     "counter_d[6",     "counter_d[7",
-    "counter_upd[2",   "counter_upd[3",   "counter_upd[4",
-    "counter_upd[5",   "counter_upd[6",   "counter_upd[7",
-    "counter_load[2",  "counter_load[3",  "counter_load[4",
-    "counter_load[5",  "counter_load[6",  "counter_load[7",
+    # MHPMCounterNum = 0 → performance counters disabled
+    "mhpmcounter", "mhpmevent", "hpm_",
+    # Counter bits ≥ 32 in the old naming convention (counter[3x], counter[4x]…)
+    "counter[3", "counter[4", "counter[5", "counter[6",  # bits 30-69, tied 0
     # Alerts/lockstep/fpga and other top-level unused
     "lockstep", "alert_", "fpga", "core_sleep",
     "fetch_enable", "ram_cfg", "scan_rst",
@@ -108,9 +97,28 @@ REACHABLE_HINTS = [
 ]
 
 
+# Regex pentru biți înalți ai contoarelor (bit >= 20).
+# Bit N necesită 2^N cicluri; cu programe de 256 instrucțiuni (~1000 cicluri)
+# biții >= 20 (2^20 = 1M cicluri) nu pot fi niciodată toggleați.
+# Folosim regex în loc de substring ca să nu prindem greșit "counter_val_o[2]"
+# (bitul 2, reachable) în loc de "counter_val_o[20]" (bitul 20, unreachable).
+_COUNTER_HIGH_BIT_RE = re.compile(
+    r'(counter_val_o|counter_val_upd_o|counter_d|counter_upd|counter_load|counter_q)'
+    r'\[([0-9]+)\]',
+    re.IGNORECASE,
+)
+_COUNTER_HIGH_THRESHOLD = 20  # bit >= 20 → 2^20 = 1M cicluri → nerealizabil
+
+
 def classify(signal_name: str, point_key: str) -> str:
     hay_lc = signal_name.lower()
     full_lc = point_key.lower()
+
+    # Verifică biți înalți de counter cu regex (evită false positive pe biți mici)
+    m = _COUNTER_HIGH_BIT_RE.search(signal_name)
+    if m and int(m.group(2)) >= _COUNTER_HIGH_THRESHOLD:
+        return f"TIED-OFF (counter bit {m.group(2)} >= {_COUNTER_HIGH_THRESHOLD}, needs 2^{m.group(2)} cycles)"
+
     for sub in TIED_OFF_SUBSTRINGS:
         if sub.lower() in hay_lc or sub.lower() in full_lc:
             return f"TIED-OFF ({sub})"
@@ -198,13 +206,7 @@ def main():
         "SecureIbex=0":       ["scramble", "dummy_instr"],
         "WritebackStage=0":   ["wb_stage", "_wb_", "rf_write_wb", "writeback_"],
         "BranchPredictor=0":  ["branch_predict", "nt_branch", "predict_"],
-        "MHPMCounterNum=0":   ["mhpmcounter", "mhpmevent", "hpm_",
-                               "counter_val_o[2", "counter_val_o[3",
-                               "counter_val_o[4", "counter_val_o[5",
-                               "counter_val_o[6", "counter_val_o[7",
-                               "counter_d[2", "counter_d[3", "counter_d[4",
-                               "counter_upd[2", "counter_upd[3",
-                               "counter_load[2", "counter_load[3",
+        "MHPMCounterNum=0 / counter bits>=20": ["mhpmcounter", "mhpmevent", "hpm_",
                                "counter[3", "counter[4", "counter[5", "counter[6"],
         "RV32B=None":         ["pack_result", "bfp_mask", "bfp_result",
                                "clmul_result", "clmulr_result", "clmulh_result",
