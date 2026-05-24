@@ -18,8 +18,9 @@ from collections import defaultdict
 THIS = Path(__file__).resolve().parent
 L5   = THIS.parent / "level5_real_rtl"
 L7   = THIS.parent / "level7_stimulus"
-sys.path.insert(0, str(L5))
+# Inserăm L7 primul ca să avem analyze_unreachable din level7_stimulus, nu level6_rvc
 sys.path.insert(0, str(L7))
+sys.path.insert(0, str(L5))
 
 import cov_parser
 from env_l9_v2 import run_program, N_OPS, IMM_BUCKETS
