@@ -52,30 +52,53 @@ def main():
     print(f"Loaded coverage.dat: {len(s.points):,} puncte, "
           f"{total_toggle:,} toggle points total")
 
-    # ── Construiește setul de chei toggle din coverage.dat ───────────────────
+    # ── Identificator stabil pentru fiecare toggle point ─────────────────────
+    # Cheile din coverage.dat conțin câmpuri variabile între rulări/mașini:
+    #   \x01f\x02<filepath>  — calea fișierului RTL (poate diferi)
+    #   \x01n\x02<num>       — număr intern Verilator (se schimbă la recompilare)
+    #   \x01h\x02<hier>      — ierarhia instanței (poate diferi cu dots vs _)
+    # Identificatorul stabil: (page/modul, signal_name, line_number)
+    # Acestea NU se schimbă dacă RTL-ul rămâne același.
+
+    _PAGE_RE = re.compile(r"page\x02([^\x01]+)")
+    _SIG_RE  = re.compile(r"\x01o\x02([^\x01]+)")
+    _LINE_RE = re.compile(r"\x01l\x02([^\x01]+)")
+
+    def stable_id(k: str) -> str:
+        pm = _PAGE_RE.search(k)
+        sm = _SIG_RE.search(k)
+        lm = _LINE_RE.search(k)
+        return (f"{pm.group(1) if pm else '?'}"
+                f"|{sm.group(1) if sm else '?'}"
+                f"|{lm.group(1) if lm else '?'}")
+
+    # Construiește set toggle keys din coverage.dat
     prefix = "page\x02v_toggle/"
     all_toggle_keys = {k for k in s.points if prefix in k}
     print(f"Toggle points în coverage.dat: {len(all_toggle_keys):,}")
 
-    # ── Determină ce e acoperit cumulat vs neacoperit ─────────────────────────
-    # cum_hits poate folosi chei ușor diferite față de coverage.dat
-    # facem normalizare simplă: scoatem câmpurile care diferă între mașini
-    _F_RE = re.compile(r"\x01f\x02[^\x01]+")
-    _N_RE = re.compile(r"\x01n\x02[^\x01]+")
+    # Mapă stable_id → cheie originală (pentru acces la s.points)
+    covdat_id_to_key = {stable_id(k): k for k in all_toggle_keys}
+    print(f"IDs unice în coverage.dat:     {len(covdat_id_to_key):,}")
 
-    def norm(k: str) -> str:
-        k = _F_RE.sub("", k)
-        k = _N_RE.sub("", k)
-        return k
+    # Construiește set stable_ids din pkl
+    cum_hits_ids = {stable_id(k) for k in cum_hits}
+    print(f"IDs unice în pkl:              {len(cum_hits_ids):,}")
 
-    cum_hits_norm = {norm(k) for k in cum_hits}
-    print(f"Hits normalizate: {len(cum_hits_norm):,}")
+    # Câte pkl IDs se regăsesc în coverage.dat?
+    overlap = cum_hits_ids & set(covdat_id_to_key.keys())
+    print(f"Overlap pkl ∩ coverage.dat:    {len(overlap):,}  "
+          f"({'%.1f' % (100*len(overlap)/max(len(cum_hits_ids),1))}% din pkl)")
+
+    if len(overlap) < len(cum_hits_ids) * 0.5:
+        print("\n  [ATENTIE] Overlap mic — cheile din pkl par incompatibile cu")
+        print("  coverage.dat curent. Posibil Vtop recompilat între rulări.")
+        print("  Continuăm cu coverage.dat single-run ca fallback.")
 
     covered   = 0
     uncovered = []
-    for k in all_toggle_keys:
-        kn = norm(k)
-        if kn in cum_hits_norm or s.points.get(k, 0) > 0:
+    for sid, k in covdat_id_to_key.items():
+        if sid in cum_hits_ids or s.points.get(k, 0) > 0:
             covered += 1
         else:
             uncovered.append(k)
