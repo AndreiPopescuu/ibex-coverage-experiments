@@ -1,12 +1,15 @@
-"""Diagnose why we plateau at ~56% toggle coverage.
+"""Analyze Ibex toggle coverage ceiling for the minimal-config build.
 
-For each of the biggest coverage-gap modules, print a sample of uncovered
-point names (signal-level). We annotate whether each signal is likely:
-  * reachable-with-more-stimulus (e.g. a mul-divider operand bit we haven't hit)
-  * unreachable-in-this-config   (e.g. PMP/ICache/debug signal tied off)
+For each uncovered toggle point, classifies the signal as:
+  * TIED-OFF   — unreachable in this config (PMPEnable=0, ICache=0, RV32B=None,
+                 WritebackStage=0, DbgTriggerEn=0, MHPMCounterNum=0, etc.)
+                 OR practically unreachable (counter bits > 2^20 require
+                 programs of millions of cycles).
+  * NEEDS      — reachable with specific stimulus we know how to emit.
+  * REACHABLE? — may be reachable; needs investigation.
 
-This lets us judge whether pushing past 56% is an achievable RL goal or whether
-the hard ceiling is set by the minimal-config build.
+The "Hard ceiling" printed at the end is the toggle fraction achievable
+with RV32IMC instructions only, given the current minimal hardware config.
 """
 
 import sys, re
@@ -51,8 +54,33 @@ TIED_OFF_SUBSTRINGS = [
     "butterfly_result", "minmax_result", "shift_result_rev",
     "singlebit_result", "bitcnt_", "bitfield_",
     "imd_val_q_i[1]",  # the second operand of B-ext state (RV32B-only)
-    # MHPMCounterNum / counter width for unused counters
-    "counter[3", "counter[4", "counter[5", "counter[6",  # bits > 32 are tied 0
+    "imd_val_q[1]",    # alias folosit în unele versiuni Ibex
+    # RV32B ALU results (RV32B=None → logica e prezentă în RTL dar output-ul
+    # e multiplexat la zero; semnalele interne nu pot togla fără instrucțiuni Zb)
+    "pack_result",      # PACK / PACKU / PACKH (Zbp)
+    "bfp_mask",         # BFP — bit field place (Zbf)
+    "bfp_result",       # BFP result
+    "clmul_result",     # CLMUL — carry-less multiply (Zbc)
+    "clmulr_result",    # CLMULR
+    "clmulh_result",    # CLMULH
+    "multicycle_result",# rezultat CLMUL multicycle (nu MUL/DIV — acelea au multdiv_result)
+    "zbe_result", "zbf_result", "zbp_result", "zbr_result", "zbt_result",
+    "rev_result", "shuffle_result", "xperm_result",
+    # MHPMCounterNum = 0 → contoare de performanță dezactivate; ibex_counter e
+    # instanțiat și pentru mcycle/minstret (active), dar biții > ~10 nu pot
+    # togla în programe de 256 instrucțiuni (bit N necesită 2^N cicluri)
+    "counter[3", "counter[4", "counter[5", "counter[6",  # bits > 32 tied 0
+    # Biți înalți ai counter_val_o / counter_d / counter_upd / counter_load
+    # (semnal din ibex_counter, nu denumit "counter[N]")
+    # bit 20 → necesită 2^20 = 1M cicluri; imposibil cu ep. de 256 instrucțiuni
+    "counter_val_o[2", "counter_val_o[3", "counter_val_o[4",
+    "counter_val_o[5", "counter_val_o[6", "counter_val_o[7",
+    "counter_d[2",     "counter_d[3",     "counter_d[4",
+    "counter_d[5",     "counter_d[6",     "counter_d[7",
+    "counter_upd[2",   "counter_upd[3",   "counter_upd[4",
+    "counter_upd[5",   "counter_upd[6",   "counter_upd[7",
+    "counter_load[2",  "counter_load[3",  "counter_load[4",
+    "counter_load[5",  "counter_load[6",  "counter_load[7",
     # Alerts/lockstep/fpga and other top-level unused
     "lockstep", "alert_", "fpga", "core_sleep",
     "fetch_enable", "ram_cfg", "scan_rst",
@@ -158,6 +186,50 @@ def main():
     print(f"\n  Hard ceiling (tied-off excluded):    {reachable_ceiling:.2f}%")
     print(f"  Current single-run coverage:          {current_pct:.2f}%")
     print(f"  Room for improvement:                 {reachable_ceiling - current_pct:.2f} points")
+
+    # ── Breakdown TIED-OFF pe motiv ───────────────────────────────────────────
+    print("\n=== TIED-OFF breakdown by reason (config parameter) ===")
+    reason_groups = {
+        "PMPEnable=0":        ["pmp_", "csr_pmp", "mseccfg"],
+        "ICache=0":           ["icache", "ic_data", "ic_tag", "ic_scr", "ic_"],
+        "DbgTriggerEn=0":     ["debug_req", "dbg_", "trigger_match", "tselect",
+                               "tdata", "depc", "dcsr", "dscratch", "mcontext"],
+        "IRQ inputs=0":       ["irq_", "mip", "nmi_"],
+        "SecureIbex=0":       ["scramble", "dummy_instr"],
+        "WritebackStage=0":   ["wb_stage", "_wb_", "rf_write_wb", "writeback_"],
+        "BranchPredictor=0":  ["branch_predict", "nt_branch", "predict_"],
+        "MHPMCounterNum=0":   ["mhpmcounter", "mhpmevent", "hpm_",
+                               "counter_val_o[2", "counter_val_o[3",
+                               "counter_val_o[4", "counter_val_o[5",
+                               "counter_val_o[6", "counter_val_o[7",
+                               "counter_d[2", "counter_d[3", "counter_d[4",
+                               "counter_upd[2", "counter_upd[3",
+                               "counter_load[2", "counter_load[3",
+                               "counter[3", "counter[4", "counter[5", "counter[6"],
+        "RV32B=None":         ["pack_result", "bfp_mask", "bfp_result",
+                               "clmul_result", "clmulr_result", "clmulh_result",
+                               "multicycle_result", "butterfly_result",
+                               "minmax_result", "shift_result_rev",
+                               "singlebit_result", "bitcnt_", "bitfield_",
+                               "imd_val_q_i[1]", "imd_val_q[1]",
+                               "zbe_result", "zbf_result", "zbp_result",
+                               "zbr_result", "zbt_result"],
+        "Constants (hart_id/boot_addr/ECC/RVFI)":
+                              ["hart_id", "boot_addr", "rvfi", "secded",
+                               "_ecc", "ecc_", "intg_", "lockstep", "alert_",
+                               "fpga", "core_sleep", "fetch_enable",
+                               "ram_cfg", "scan_rst", "mstack_"],
+    }
+    all_tied = []
+    for m, pts in by_module.items():
+        for tag, sig, line in pts:
+            if tag.startswith("TIED"):
+                all_tied.append(sig.lower())
+
+    for reason, subs in reason_groups.items():
+        cnt = sum(1 for s_ in all_tied if any(sub.lower() in s_ for sub in subs))
+        if cnt:
+            print(f"  {reason:<40s}: {cnt:>5d} semnale")
 
     # Show 20 random "REACHABLE?" signals as sanity
     print("\n=== Sample of REACHABLE? uncovered signals (what RL could aim for) ===")
