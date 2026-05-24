@@ -18,13 +18,22 @@ from collections import defaultdict
 THIS = Path(__file__).resolve().parent
 L5   = THIS.parent / "level5_real_rtl"
 L7   = THIS.parent / "level7_stimulus"
-# Inserăm L7 primul ca să avem analyze_unreachable din level7_stimulus, nu level6_rvc
-sys.path.insert(0, str(L7))
 sys.path.insert(0, str(L5))
 
 import cov_parser
 from env_l9_v2 import run_program, N_OPS, IMM_BUCKETS
-from analyze_unreachable import classify, _COUNTER_HIGH_BIT_RE, _COUNTER_HIGH_THRESHOLD
+
+# Importăm explicit din level7_stimulus ca să nu prindă level6_rvc
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location(
+    "analyze_unreachable_l7",
+    str(L7 / "analyze_unreachable.py"),
+)
+_ar = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_ar)
+classify                  = _ar.classify
+_COUNTER_HIGH_BIT_RE      = _ar._COUNTER_HIGH_BIT_RE
+_COUNTER_HIGH_THRESHOLD   = _ar._COUNTER_HIGH_THRESHOLD
 
 # ── Op indices (din codec_l9) ────────────────────────────────────────────────
 ADD=0; SUB=1; SLL=2; SLT=3; SLTU=4; XOR=5; SRL=6; SRA=7; OR=8; AND=9
