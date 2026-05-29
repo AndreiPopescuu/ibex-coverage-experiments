@@ -61,6 +61,12 @@ def main():
     corpus   = []
     out_path = THIS / args.out
 
+    if out_path.exists():
+        with open(out_path) as f:
+            existing = json.load(f)
+        corpus = existing.get("programs", [])
+        print(f"Append la corpus existent: {len(corpus)} programe deja salvate")
+
     for ep in range(args.episodes):
         obs, _ = env.reset()
         done = False

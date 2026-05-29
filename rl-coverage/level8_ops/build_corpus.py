@@ -37,7 +37,7 @@ def main():
     ap.add_argument("--episodes", type=int, default=200)
     ap.add_argument("--steps",    type=int, default=256)
     ap.add_argument("--model",    default=None, help="Fișier .zip PPO (opțional)")
-    ap.add_argument("--out",      default="corpus_l8.json")
+    ap.add_argument("--out",      default="../corpus_all.json")
     ap.add_argument("--seed",     type=int, default=42)
     args = ap.parse_args()
 
@@ -59,6 +59,12 @@ def main():
     cum_hits = set()
     corpus   = []
     out_path = THIS / args.out
+
+    if out_path.exists():
+        with open(out_path) as f:
+            existing = json.load(f)
+        corpus = existing.get("programs", [])
+        print(f"Append la corpus existent: {len(corpus)} programe deja salvate")
 
     for ep in range(args.episodes):
         obs, _ = env.reset()
