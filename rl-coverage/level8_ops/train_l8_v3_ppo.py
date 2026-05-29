@@ -129,7 +129,7 @@ def main():
                     help="Salvează modelul PPO antrenat")
     ap.add_argument("--saturation", type=int, default=50,
                     help="Oprește după N ep consecutive fără hits noi")
-    ap.add_argument("--corpus-out", default="corpus_l8.json",
+    ap.add_argument("--corpus-out", default="../corpus_all.json",
                     help="Salvează episoadele cu bins noi în JSON")
     args = ap.parse_args()
 

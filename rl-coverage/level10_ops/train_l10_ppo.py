@@ -144,7 +144,7 @@ def main():
                     help="Suprascrie ent_coef (ex: 0.15 pentru mai multă explorare)")
     ap.add_argument("--pretrained-model", default=None,
                     help="Încarcă weights dintr-un model existent dar resetează hits (fresh coverage)")
-    ap.add_argument("--corpus-out", default="corpus_l10.json",
+    ap.add_argument("--corpus-out", default="../corpus_all.json",
                     help="Fișier JSON pentru episoadele cu bins noi (append dacă există)")
     args = ap.parse_args()
 

@@ -147,7 +147,7 @@ def main():
     ap.add_argument("--checkpoint-every", type=int, default=100)
     ap.add_argument("--ent-coef", type=float, default=None,
                     help="Suprascrie ent_coef (ex: 0.15 pentru mai multă explorare)")
-    ap.add_argument("--corpus-out", default="corpus_l9.json",
+    ap.add_argument("--corpus-out", default="../corpus_all.json",
                     help="Fișier JSON pentru episoadele cu bins noi (append dacă există)")
     args = ap.parse_args()
 
