@@ -52,6 +52,16 @@ N_OBS       = 3 + N_MODULES + HIST_LEN  # = 32
 MAX_EP_NORM = 500.0
 
 
+_F_RE     = re.compile(r"\x01f\x02[^\x01]+")
+_N_RE     = re.compile(r"\x01n\x02[^\x01]+")
+_H_DOT_RE = re.compile(r"(\x01h\x02)\.")
+
+def _norm_key(key: str) -> str:
+    k = _F_RE.sub("", key)
+    k = _N_RE.sub("", k)
+    k = _H_DOT_RE.sub(r"\1", k)
+    return k
+
 def _module_of(key: str) -> str | None:
     m = re.search(r"page\x02v_toggle/([^\x01]+)\x01", key)
     if not m:
@@ -159,7 +169,7 @@ class IbexL9V2Env(gym.Env):
                 self._total_tog = max(toggle_total, 1)
 
                 prefix = "\x01page\x02v_toggle/"
-                ep_hits  = {k for k, v in summary.points.items()
+                ep_hits  = {_norm_key(k) for k, v in summary.points.items()
                             if v > 0 and prefix in ("\x01" + k)}
                 new_hits = ep_hits - self._cum_hits
                 self._cum_hits |= ep_hits
