@@ -226,6 +226,8 @@ class IbexL10Env(gym.Env):
                     "mod_coverage":     {m: self._mod_covered[m] /
                                          max(self._mod_total[m], 1)
                                          for m in MODULES},
+                    "ep_words":         [int(w) for w in emit_program(self._actions)]
+                                        if new_hits else None,
                 })
             self._n_episodes += 1
 
