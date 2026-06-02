@@ -39,11 +39,14 @@ signal.signal(signal.SIGINT, _sigint_handler)
 
 
 class Log(BaseCallback):
-    def __init__(self, baseline_pct: float, checkpoint_every: int = 100):
+    def __init__(self, baseline_pct: float, checkpoint_every: int = 100,
+                 corpus_path: str | None = None):
         super().__init__()
         self.baseline_pct     = baseline_pct
         self.checkpoint_every = checkpoint_every
-        self.history = []
+        self.corpus_path      = corpus_path
+        self.history          = []
+        self._corpus          = []
 
     def _on_step(self):
         global _stop_requested
@@ -67,6 +70,14 @@ class Log(BaseCallback):
               f"worst: {worst} {worst_p:.1f}%",
               flush=True)
 
+        words = info.get("ep_words")
+        if words and self.corpus_path:
+            self._corpus.append({
+                "ep": ep, "words": words,
+                "new_hits": new_tog, "cum_pct": round(cum, 3),
+            })
+            self._save_corpus(cum)
+
         if ep % self.checkpoint_every == 0:
             self._save(ep, reason="checkpoint")
 
@@ -75,6 +86,23 @@ class Log(BaseCallback):
             return False
 
         return True
+
+    def _save_corpus(self, cum_pct: float):
+        import json
+        with open(self.corpus_path, "w") as f:
+            json.dump({
+                "total_programs": len(self._corpus),
+                "final_cum_pct":  round(cum_pct, 3),
+                "programs":       self._corpus,
+            }, f, indent=2)
+
+    def _load_corpus(self):
+        import json
+        from pathlib import Path
+        if self.corpus_path and Path(self.corpus_path).exists():
+            with open(self.corpus_path) as f:
+                data = json.load(f)
+            self._corpus = data.get("programs", [])
 
     def _save(self, ep: int, reason: str = "checkpoint"):
         self.model.save(str(CKPT_MODEL))
@@ -103,6 +131,8 @@ def main():
                     help="Hits din L8 (l8_pipeline_hits.pkl) sau L9 v2")
     ap.add_argument("--checkpoint-every", type=int, default=100)
     ap.add_argument("--ent-coef", type=float, default=None)
+    ap.add_argument("--corpus-out", default="../corpus_all.json",
+                    help="Fișier JSON pentru episoadele cu bins noi (append dacă există)")
     args = ap.parse_args()
 
     from codec_l9_focused import N_OPS, N_CSR_BUCKETS, IMM_BUCKETS
@@ -183,7 +213,9 @@ def main():
             verbose=0, seed=args.seed, device="cpu",
         )
 
-    cb = Log(baseline_pct=baseline_pct, checkpoint_every=args.checkpoint_every)
+    cb = Log(baseline_pct=baseline_pct, checkpoint_every=args.checkpoint_every,
+             corpus_path=str(THIS / args.corpus_out))
+    cb._load_corpus()
     cb.history = history_prev
 
     t0 = time.time()
