@@ -207,6 +207,8 @@ def attempt(prompt, baseline_ids, covdat_map, target_set):
         return {"program": [], "hit": set(), "missing": set(target_set), "error": str(e)}
 
     print(f"    [program: {len(program)} instructions]")
+    csr_ops = [a for a in actions_json if a.get("op","").upper() in ("CSRRW","CSRRS","CSRRC","CSRRWI","CSRRSI","CSRRCI")]
+    print(f"    [CSR ops in program: {csr_ops[:5]}]")
     result = starter.run_and_check(program, baseline_ids, covdat_map, target_set)
     print(f"    [new bins total: {result['new_total']}  target: {result['new_target']}  total_covered: {result.get('total_covered', '?')}  signals: {result['signals'][:5]}{'...' if len(result['signals']) > 5 else ''}]")
     hit = set(result["target_signals"]) & target_set
