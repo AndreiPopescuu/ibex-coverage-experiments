@@ -179,18 +179,27 @@ def cheat_sheet_text(target_csrs=None, compact=False) -> str:
             rs_txt = ", ".join(f"{op}(rs1={r1},imm_bucket={ib})" for op, r1, ib in rs)
             lines.append(f"    {name:14s} (0x{csr:03x}): {rs_txt}")
     lines.append("")
-    lines.append("PRE-LOADED REGISTERS — the test harness initialises these BEFORE your")
-    lines.append("program runs (test_run_for_l8.py prologue). Use them directly as operands")
-    lines.append("instead of constructing constants with LUI:")
-    for reg, desc in PRELOADED_REGS.items():
-        lines.append(f"    x{reg:<3d} = {desc}")
-    lines.append("")
+    if not compact:
+        lines.append("PRE-LOADED REGISTERS — the test harness initialises these BEFORE your")
+        lines.append("program runs (test_run_for_l8.py prologue). Use them directly as operands")
+        lines.append("instead of constructing constants with LUI:")
+        for reg, desc in PRELOADED_REGS.items():
+            lines.append(f"    x{reg:<3d} = {desc}")
+        lines.append("")
+    else:
+        lines.append("KEY PRE-LOADED REGISTERS: x0=0, x16=0xFFFFFFFF, x17=INT_MAX, x18=INT_MIN,")
+        lines.append("  x19=0x55555555, x20=0x00010000 (safe mem base), x21=0xAAAAAAAA.")
+        lines.append("  All others (including x6) are 0 unless you load them first with ADDI/LUI.")
+        lines.append("")
     lines.append("EXCEPTION HANDLING IS ALREADY SET UP — DO NOT install your own mtvec/handler.")
-    lines.append("  The harness pre-installs mtvec=0x00200000 and a trap handler there that")
-    lines.append("  reads mepc/mcause/mtval, advances mepc by 4, and executes MRET. You can")
-    lines.append("  safely emit ECALL, EBREAK, illegal instructions, or misaligned loads/")
-    lines.append("  stores — they will trap, the handler returns, and your program continues")
-    lines.append("  with the NEXT instruction you emitted (not the one that trapped).")
+    if compact:
+        lines.append("  Trap handler at 0x00200000 advances mepc+4 and does MRET. ECALL/EBREAK safe.")
+    else:
+        lines.append("  The harness pre-installs mtvec=0x00200000 and a trap handler there that")
+        lines.append("  reads mepc/mcause/mtval, advances mepc by 4, and executes MRET. You can")
+        lines.append("  safely emit ECALL, EBREAK, illegal instructions, or misaligned loads/")
+        lines.append("  stores — they will trap, the handler returns, and your program continues")
+        lines.append("  with the NEXT instruction you emitted (not the one that trapped).")
     lines.append("")
     lines.append("MEMORY MODEL: unwritten data addresses return (address XOR 0xDEADBEEF) on")
     lines.append("read. Programs run starting at 0x80000000 in M-mode. x20 = 0x00010000 is a")
