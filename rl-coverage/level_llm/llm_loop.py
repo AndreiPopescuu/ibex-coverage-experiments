@@ -37,7 +37,7 @@ sys.path.insert(0, str(THIS))
 import starter
 import isa_reference as ref
 
-MODEL        = "meta-llama/llama-3.3-70b-instruct:free"
+MODEL        = "google/gemma-3-27b-it:free"
 MAX_ROUNDS   = 4
 WORST_ROUNDS = 6
 RESULTS_PATH = THIS / "agentic_results.json"
