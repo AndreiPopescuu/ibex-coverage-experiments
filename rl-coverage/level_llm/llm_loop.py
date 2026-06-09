@@ -29,7 +29,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+try:
+    from groq import Groq
+except ImportError:
+    Groq = None
 
 THIS = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS))
@@ -37,7 +44,8 @@ sys.path.insert(0, str(THIS))
 import starter
 import isa_reference as ref
 
-MODEL        = "google/gemma-3-27b-it:free"
+MODEL        = "llama-3.3-70b-versatile"   # Groq — reset zilnic la miezul noptii UTC
+# MODEL      = "meta-llama/llama-3.3-70b-instruct"  # OpenRouter platit (~$0.10/1M tokens)
 MAX_ROUNDS   = 4
 WORST_ROUNDS = 6
 RESULTS_PATH = THIS / "agentic_results.json"
@@ -47,13 +55,14 @@ _client = None
 def client():
     global _client
     if _client is None:
-        key = os.environ.get("OPENROUTER_API_KEY")
-        if not key:
-            sys.exit("OPENROUTER_API_KEY not set — put it in level_llm/.env (see .gitignore)")
-        _client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=key,
-        )
+        or_key   = os.environ.get("OPENROUTER_API_KEY")
+        groq_key = os.environ.get("GROQ_API_KEY")
+        if or_key and OpenAI:
+            _client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=or_key)
+        elif groq_key and Groq:
+            _client = Groq(api_key=groq_key)
+        else:
+            sys.exit("Set OPENROUTER_API_KEY or GROQ_API_KEY in level_llm/.env")
     return _client
 
 
