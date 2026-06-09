@@ -106,6 +106,7 @@ def run_and_check(actions: list, baseline_ids: set, covdat_map: dict,
     return {
         'new_total':      len(new_ids),
         'new_target':     len(new_target),
+        'total_covered':  len(run_hits_ids),
         'signals':        sorted(new_signals),
         'target_signals': sorted(new_target),
     }
