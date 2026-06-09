@@ -69,7 +69,7 @@ def load_accessible_bins():
 
 # ── Core function: run a program and check new hits ───────────────────────────
 def run_and_check(actions: list, baseline_ids: set, covdat_map: dict,
-                  target_bins: set = None) -> dict:
+                  target_bins: set = None, debug_signal: str = None) -> dict:
     """
     Run a program and return newly covered bins.
 
@@ -93,6 +93,15 @@ def run_and_check(actions: list, baseline_ids: set, covdat_map: dict,
     run_hits_ids = {stable_id(k)
                     for k, v in summary.points.items()
                     if v > 0 and "v_toggle/" in k}
+
+    if debug_signal:
+        dbg = [(k, v) for k, v in summary.points.items()
+               if debug_signal.lower() in k.lower() and "v_toggle/" in k]
+        print(f"    [debug '{debug_signal}': {len(dbg)} toggle keys in summary, "
+              f"{sum(1 for _,v in dbg if v>0)} with v>0]")
+        for k, v in dbg[:4]:
+            sid = stable_id(k)
+            print(f"      v={v}  in_baseline={sid in baseline_ids}  name={covdat_map.get(sid,'?')}  sid={sid[:60]}")
 
     new_ids = run_hits_ids - baseline_ids
 
