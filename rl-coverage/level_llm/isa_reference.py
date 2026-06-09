@@ -93,29 +93,44 @@ CSR_NAMES = {
 }
 
 
-def cheat_sheet_text(target_csrs=None) -> str:
+def cheat_sheet_text(target_csrs=None, compact=False) -> str:
     """Render the full encoding reference as prompt-ready text.
 
     target_csrs: optional list of CSR addresses to show routes for (keeps the
     prompt short — showing all 32 would be wasteful for groups that don't
     touch CSRs).
+    compact: if True, omit the full OP TABLE (saves ~800 tokens) — just list
+    the most useful op names without numbers.
     """
     lines = []
     lines.append("ACTION FORMAT")
     lines.append("Each instruction you emit is a 5-tuple: [op, rd, rs1, rs2, imm_bucket]")
-    lines.append("  op          : integer 0-82, selects the instruction (see OP TABLE)")
+    lines.append("  op          : use the NAME string (e.g. \"ADDI\", \"CSRRW\", \"LUI\")")
     lines.append("  rd, rs1, rs2: integer register numbers 0-31 (x0 is hardwired to zero)")
     lines.append("  imm_bucket  : integer 0-4 — an INDEX into a small fixed table of")
     lines.append("                immediate values. You CANNOT pick an arbitrary immediate;")
     lines.append("                you can only pick which of 5 pre-baked values to use,")
     lines.append("                and the table differs per instruction class (below).")
     lines.append("")
-    lines.append("OP TABLE (name -> number); use the NAME in your JSON, we translate it")
-    name_lines = []
-    for name, num in sorted(OP_NAMES.items(), key=lambda kv: kv[1]):
-        name_lines.append(f"{name}={num}")
-    for i in range(0, len(name_lines), 8):
-        lines.append("  " + "  ".join(name_lines[i:i+8]))
+    if compact:
+        lines.append("AVAILABLE OPS (use these name strings in your JSON):")
+        lines.append("  ALU-R: ADD SUB AND OR XOR SLL SRL SRA SLT SLTU")
+        lines.append("  ALU-I: ADDI ANDI ORI XORI SLTI SLTIU SLLI SRLI SRAI")
+        lines.append("  MUL/DIV: MUL MULH MULHSU MULHU DIV DIVU REM REMU")
+        lines.append("  LOAD: LB LH LW LBU LHU   STORE: SB SH SW")
+        lines.append("  BRANCH: BEQ BNE BLT BGE BLTU BGEU")
+        lines.append("  JUMP: JAL JALR   UPPER: LUI AUIPC")
+        lines.append("  CSR-REG: CSRRW CSRRS CSRRC   CSR-IMM: CSRRWI CSRRSI CSRRCI")
+        lines.append("  TRAP: ECALL EBREAK MRET WFI FENCE_I")
+        lines.append("  RVC: C_ADDI C_LI C_LUI C_SLLI C_MV C_ADD C_ADDI4SPN C_LW C_SW")
+        lines.append("       C_AND C_OR C_XOR C_SUB C_SRLI C_SRAI C_ANDI")
+    else:
+        lines.append("OP TABLE (name -> number); use the NAME in your JSON, we translate it")
+        name_lines = []
+        for name, num in sorted(OP_NAMES.items(), key=lambda kv: kv[1]):
+            name_lines.append(f"{name}={num}")
+        for i in range(0, len(name_lines), 8):
+            lines.append("  " + "  ".join(name_lines[i:i+8]))
     lines.append("")
     lines.append("IMMEDIATE TABLES — what imm_bucket 0,1,2,3,4 actually produce:")
     lines.append(f"  R-type ALU/MUL/DIV ({', '.join(sorted(R_TYPE))}): imm_bucket is IGNORED")

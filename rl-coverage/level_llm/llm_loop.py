@@ -37,7 +37,7 @@ sys.path.insert(0, str(THIS))
 import starter
 import isa_reference as ref
 
-MODEL        = "gemma2-9b-it"
+MODEL        = "llama-3.1-8b-instant"
 MAX_ROUNDS   = 4
 WORST_ROUNDS = 6
 RESULTS_PATH = THIS / "agentic_results.json"
@@ -119,7 +119,7 @@ OUTPUT_FORMAT = (
 
 def build_prompt(group, history=None, focus_signals=None):
     target = focus_signals if focus_signals else group["signal_names"]
-    sheet = ref.cheat_sheet_text(target_csrs=relevant_csrs_for_group(group))
+    sheet = ref.cheat_sheet_text(target_csrs=relevant_csrs_for_group(group), compact=True)
     bins_txt = "\n".join(f"  - {s}" for s in target)
 
     parts = [
