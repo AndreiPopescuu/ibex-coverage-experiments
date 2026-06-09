@@ -37,7 +37,7 @@ sys.path.insert(0, str(THIS))
 import starter
 import isa_reference as ref
 
-MODEL        = "llama-3.1-8b-instant"
+MODEL        = "gemma2-9b-it"
 MAX_ROUNDS   = 4
 WORST_ROUNDS = 6
 RESULTS_PATH = THIS / "agentic_results.json"
