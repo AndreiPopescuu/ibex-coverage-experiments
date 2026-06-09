@@ -29,7 +29,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-from groq import Groq
+from openai import OpenAI
 
 THIS = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS))
@@ -37,7 +37,7 @@ sys.path.insert(0, str(THIS))
 import starter
 import isa_reference as ref
 
-MODEL        = "meta-llama/llama-4-scout-17b-16e-instruct"
+MODEL        = "meta-llama/llama-3.3-70b-instruct:free"
 MAX_ROUNDS   = 4
 WORST_ROUNDS = 6
 RESULTS_PATH = THIS / "agentic_results.json"
@@ -47,10 +47,13 @@ _client = None
 def client():
     global _client
     if _client is None:
-        key = os.environ.get("GROQ_API_KEY")
+        key = os.environ.get("OPENROUTER_API_KEY")
         if not key:
-            sys.exit("GROQ_API_KEY not set — put it in level_llm/.env (see .gitignore)")
-        _client = Groq(api_key=key)
+            sys.exit("OPENROUTER_API_KEY not set — put it in level_llm/.env (see .gitignore)")
+        _client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=key,
+        )
     return _client
 
 
