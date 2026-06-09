@@ -36,22 +36,21 @@ for name in sorted(target_bins):
         else:
             not_baseline.append(name)
 
-print(f"\nBins NOT found in covdat_map (naming mismatch): {len(not_in_map)}")
-for n in not_in_map[:10]:
-    print(f"  {n}")
+print(f"\nBins NOT found in covdat_map (naming mismatch / parse garbage): {len(not_in_map)}")
+for n in not_in_map:
+    print(f"  {n!r}")
 
 print(f"\nBins found in covdat_map but ALREADY IN BASELINE: {len(in_baseline)}")
-for n in in_baseline[:10]:
+for n in in_baseline:
     print(f"  {n}")
 
 print(f"\nBins found in covdat_map and NOT in baseline (genuinely reachable): {len(not_baseline)}")
-for n in not_baseline[:10]:
+for n in not_baseline:
     print(f"  {n}")
 
-# Cauta partial matches pentru primele 3 target bins care nu se gasesc
-if not_in_map:
-    print(f"\nPartial matches in covdat_map for '{not_in_map[0]}':")
-    needle = not_in_map[0].split("[")[0].lower()
-    matches = [n for n in covdat_map.values() if needle in n.lower()]
-    for m in sorted(set(matches))[:10]:
-        print(f"  {m}")
+# Arata distributia pe grupe (GROUP 1 = mcountinhibit, etc.)
+print("\n--- mcountinhibit bins specifically ---")
+for cat, lst in [("NOT in map", not_in_map), ("already in baseline", in_baseline), ("genuinely reachable", not_baseline)]:
+    mc = [n for n in lst if "mcountinhibit" in n.lower()]
+    if mc:
+        print(f"  {cat}: {mc}")
