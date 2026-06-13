@@ -37,9 +37,10 @@ sys.path.insert(0, str(THIS))
 import starter
 import isa_reference as ref
 
-MODEL        = "llama-3.3-70b-versatile"
+MODEL        = "deepseek-r1-distill-llama-70b"
 MAX_ROUNDS   = 4
 WORST_ROUNDS = 6
+K_SAMPLES    = 3   # programs generated per round; coverage = union across all K
 RESULTS_PATH = THIS / "agentic_results.json"
 BINS_FILE    = THIS / "accessible_bins_for_llm.txt"
 
@@ -211,6 +212,43 @@ def attempt(prompt, baseline_ids, covdat_map, target_set):
             "all_new_signals": result["signals"]}
 
 
+def attempt_k(prompt, baseline_ids, covdat_map, target_set, k=K_SAMPLES):
+    """Generate K programs, run each through Verilator, return union of hits.
+
+    History records the best single program but reports union coverage so the
+    next round's prompt reflects the true accumulated progress.
+    """
+    union_hit = set()
+    best_program, best_count = [], -1
+    parse_errors = []
+
+    for i in range(k):
+        raw = call_llm(prompt)
+        try:
+            actions_json = extract_json_array(raw)
+            program = ref.parse_program(actions_json)
+        except (ValueError, json.JSONDecodeError) as e:
+            parse_errors.append(str(e))
+            print(f"    [sample {i+1}/{k}: parse error — {e}]")
+            continue
+
+        result = starter.run_and_check(program, baseline_ids, covdat_map, target_set)
+        hit = set(result["target_signals"]) & target_set
+        union_hit |= hit
+        print(f"    [sample {i+1}/{k}: +{len(hit)} hits, union so far {len(union_hit)}]")
+
+        if len(hit) > best_count:
+            best_count = len(hit)
+            best_program = actions_json
+
+    if best_count == -1:
+        return {"program": [], "hit": set(), "missing": set(target_set),
+                "error": parse_errors[0] if parse_errors else "all samples failed"}
+
+    return {"program": best_program, "hit": union_hit,
+            "missing": target_set - union_hit, "all_new_signals": []}
+
+
 # ── Per-group agentic loop ────────────────────────────────────────────────────
 def run_group(group, baseline_ids, covdat_map, max_rounds=MAX_ROUNDS):
     target_set = set(group["signal_names"])
@@ -218,7 +256,7 @@ def run_group(group, baseline_ids, covdat_map, max_rounds=MAX_ROUNDS):
     print(f"\n=== GROUP {group['id']}: {group['title']} ({len(target_set)} bins) ===")
     for rnd in range(1, max_rounds + 1):
         prompt = build_prompt(group, history=history)
-        h = attempt(prompt, baseline_ids, covdat_map, target_set - solved)
+        h = attempt_k(prompt, baseline_ids, covdat_map, target_set - solved)
         solved |= h["hit"]
         h["missing"] = target_set - solved
         history.append(h)
@@ -252,7 +290,7 @@ def run_worst_state(remaining, baseline_ids, covdat_map, group_by_signal,
         if not target_set:
             break
         prompt = build_prompt(pseudo_group, history=history, focus_signals=sorted(target_set))
-        h = attempt(prompt, baseline_ids, covdat_map, target_set)
+        h = attempt_k(prompt, baseline_ids, covdat_map, target_set)
         solved |= h["hit"]
         h["missing"] = target_set - h["hit"]
         history.append(h)
