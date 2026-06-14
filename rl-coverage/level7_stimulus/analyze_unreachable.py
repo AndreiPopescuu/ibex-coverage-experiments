@@ -75,6 +75,27 @@ TIED_OFF_SUBSTRINGS = [
     "fetch_enable", "ram_cfg", "scan_rst",
     "boot_addr",  # fixed constant
     "hart_id",    # fixed to 0
+    # DbgTriggerEn=0 — debug trigger registers (missed above)
+    "tmatch_", "debug_mode", "debug_ebreak", "debug_single_step",
+    "debug_cause", "debug_csr_save", "debug_mode_entering",
+    "illegal_csr_dbg", "csr_restore_dret",
+    # SecureIbex=0 — shadow register error signals (missed above)
+    "mstatus_err", "mtvec_err", "csr_shadow_err",
+    "cpuctrlsts_part_", "data_ind_timing", "pc_mismatch_alert",
+    # MHPMCounterNum=0 — mcountinhibit bits 3-31 are HPM counter inhibit bits
+    "mcountinhibit[3", "mcountinhibit[4", "mcountinhibit[5", "mcountinhibit[6",
+    "mcountinhibit[7", "mcountinhibit[8", "mcountinhibit[9",
+    "mcountinhibit[1", "mcountinhibit[2",  # catches [10]-[29]
+    "mcountinhibit[30", "mcountinhibit[31",
+    # RISC-V architectural: bit 0 of any PC is always 0 (2-byte alignment)
+    "pc_if_i[0]", "pc_id_i[0]", "pc_wb[0]", "exception_pc[0]",
+    "crash_dump_o.current_pc[0]",
+    # mtvec[1] always 0 (Ibex MODE field only uses bit 0)
+    "mtvec_q[1]", "mtvec_d[1]", "csr_mtvec_o[1]", "csr_mtvec[1]",
+    # mepc[0] always 0 (instruction alignment)
+    "mepc_q[0]", "mepc_d[0]", "csr_mepc_o[0]", "csr_mepc[0]",
+    # RV32B imd_val slot 1 (missed above)
+    "imd_val_q_ex[1]",
 ]
 
 # Signals that ARE reachable but need specific stimulus we don't currently emit.

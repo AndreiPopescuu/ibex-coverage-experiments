@@ -29,29 +29,47 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
-from groq import Groq
-
 THIS = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS))
 
 import starter
 import isa_reference as ref
 
-MODEL        = "deepseek-r1-distill-llama-70b"
+# Defaults — overridden by --provider / --model CLI flags
+PROVIDER     = "groq"
+MODEL        = "llama-3.3-70b-versatile"
 MAX_ROUNDS   = 4
 WORST_ROUNDS = 6
-K_SAMPLES    = 3   # programs generated per round; coverage = union across all K
+K_SAMPLES    = 2   # programs generated per round; coverage = union across all K
 RESULTS_PATH = THIS / "agentic_results.json"
 BINS_FILE    = THIS / "accessible_bins_for_llm.txt"
 
 _client = None
+
 def client():
     global _client
-    if _client is None:
+    if _client is not None:
+        return _client
+    if PROVIDER == "groq":
+        from groq import Groq
         key = os.environ.get("GROQ_API_KEY")
         if not key:
-            sys.exit("GROQ_API_KEY not set — put it in level_llm/.env (see .gitignore)")
+            sys.exit("GROQ_API_KEY not set — put it in level_llm/.env")
         _client = Groq(api_key=key)
+    elif PROVIDER == "google":
+        from google import genai
+        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not key:
+            sys.exit("GEMINI_API_KEY not set — put it in level_llm/.env")
+        _client = genai.Client(api_key=key)
+    elif PROVIDER == "openrouter":
+        from openai import OpenAI
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            sys.exit("OPENROUTER_API_KEY not set — put it in level_llm/.env")
+        _client = OpenAI(api_key=key, base_url="https://openrouter.ai/api/v1")
+    else:
+        sys.exit(f"Unknown provider: {PROVIDER!r} (use 'groq', 'google', or 'openrouter')")
     return _client
 
 
@@ -180,18 +198,39 @@ def extract_json_array(text):
 
 
 def call_llm(prompt, retries=4):
-    for attempt in range(retries):
+    for attempt_i in range(retries):
         try:
-            resp = client().chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT},
-                          {"role": "user", "content": prompt}],
-                temperature=0.4,
-                max_tokens=4096,
-            )
-            return resp.choices[0].message.content
+            if PROVIDER == "groq":
+                resp = client().chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                              {"role": "user", "content": prompt}],
+                    temperature=0.4,
+                    max_tokens=4096,
+                )
+                return resp.choices[0].message.content
+            elif PROVIDER == "google":
+                from google.genai import types
+                resp = client().models.generate_content(
+                    model=MODEL,
+                    contents=f"{SYSTEM_PROMPT}\n\n{prompt}",
+                    config=types.GenerateContentConfig(
+                        temperature=0.4,
+                        max_output_tokens=4096,
+                    ),
+                )
+                return resp.text
+            elif PROVIDER == "openrouter":
+                resp = client().chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                              {"role": "user", "content": prompt}],
+                    temperature=0.4,
+                    max_tokens=4096,
+                )
+                return resp.choices[0].message.content
         except Exception as e:
-            wait = 15 * (attempt + 1)
+            wait = 15 * (attempt_i + 1)
             print(f"    [llm error: {e!r}; retrying in {wait}s]")
             time.sleep(wait)
     raise RuntimeError("LLM call failed after retries")
@@ -235,7 +274,9 @@ def attempt_k(prompt, baseline_ids, covdat_map, target_set, k=K_SAMPLES):
         result = starter.run_and_check(program, baseline_ids, covdat_map, target_set)
         hit = set(result["target_signals"]) & target_set
         union_hit |= hit
-        print(f"    [sample {i+1}/{k}: +{len(hit)} hits, union so far {len(union_hit)}]")
+        print(f"    [sample {i+1}/{k}: +{len(hit)} hits, union so far {len(union_hit)}]"
+              f" [new_total={result['new_total']}, new_target={result['new_target']},"
+              f" program_len={len(actions_json)}]")
 
         if len(hit) > best_count:
             best_count = len(hit)
@@ -303,13 +344,28 @@ def run_worst_state(remaining, baseline_ids, covdat_map, group_by_signal,
 
 # ── Driver ────────────────────────────────────────────────────────────────────
 def main():
+    global PROVIDER, MODEL
     ap = argparse.ArgumentParser()
     ap.add_argument("--group", type=int, default=None,
                     help="run only this group id (1-8); default: all groups + worst-state pass")
     ap.add_argument("--rounds", type=int, default=MAX_ROUNDS)
     ap.add_argument("--no-worst-state", action="store_true")
     ap.add_argument("--list", action="store_true", help="list parsed groups and exit")
+    ap.add_argument("--provider", default=PROVIDER, choices=["groq", "google", "openrouter"],
+                    help="LLM provider (default: groq)")
+    ap.add_argument("--model", default=None,
+                    help="override model name (e.g. deepseek/deepseek-r1)")
     args = ap.parse_args()
+
+    PROVIDER = args.provider
+    if args.model:
+        MODEL = args.model
+    elif PROVIDER == "google":
+        MODEL = "gemini-2.5-flash"
+    elif PROVIDER == "openrouter":
+        MODEL = "deepseek/deepseek-r1"
+
+    print(f"Provider: {PROVIDER}  Model: {MODEL}")
 
     groups = parse_groups()
     if args.list:

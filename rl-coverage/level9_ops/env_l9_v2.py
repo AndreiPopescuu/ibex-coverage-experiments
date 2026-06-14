@@ -75,13 +75,15 @@ def run_program(actions):
         json.dump({"n": len(machine), "agent": "l8",
                    "machine_code": [int(m) for m in machine]}, f)
     env = os.environ.copy()
-    cocotb_libs = "/home/andrei/ibex_env/lib/python3.12/site-packages/cocotb/libs"
+    import site as _site
+    _sp = _site.getsitepackages()[0]
+    cocotb_libs = str(Path(_sp) / "cocotb" / "libs")
     env["LD_LIBRARY_PATH"] = (
         cocotb_libs + ":/usr/lib/x86_64-linux-gnu"
         + ":" + env.get("LD_LIBRARY_PATH", "")
     )
     env["PYTHONPATH"] = (
-        str(ML4DV) + ":/home/andrei/ibex_env/lib/python3.12/site-packages"
+        str(ML4DV) + ":" + _sp
         + ":" + env.get("PYTHONPATH", "")
     )
     env["MODULE"]     = "test_run_for_l8"

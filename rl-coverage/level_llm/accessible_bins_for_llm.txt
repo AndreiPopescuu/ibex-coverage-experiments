@@ -1,337 +1,1110 @@
 ======================================================================
-UNCOVERED ACCESSIBLE TOGGLE BINS — Ibex RISC-V
-Total: 121 bins (exclud structural + testbench)
+ACCESSIBLE BINS FOR LLM — genererat din L10 baseline (14,404 hits)
+Total bins: 862
 ======================================================================
 
-CONTEXT:
-  Processor : Ibex RISC-V (RV32IMC, Machine mode)
-  Simulation: Verilator + cocotb
-  Coverage  : 71.94% achieved (14,404 / 20,023 toggle bins)
-  These bins CAN toggle — proven by Verilator constant propagation.
-  Programs start at 0x80000000, run in M-mode.
-
-CONFIGURATION (fixed — cannot change without recompilation):
-  PMPEnable=0, ICache=0, RV32B=None, BranchPredictor=0,
-  WritebackStage=0, SecureIbex=0, RV32M=RV32MFast (MUL/DIV enabled)
-
-TASK:
-  Write RISC-V assembly programs (RV32IMC) that toggle each group.
-  Each signal must transition 0→1 AND 1→0 to be "covered".
-
 ======================================================================
-GROUP 1: mcountinhibit CSR bits (30 bins)
-======================================================================
+GROUP 1: ibex_core (151 bins)
 
 EXPLANATION:
-  mcountinhibit (CSR 0x320) controls which performance counters are frozen.
-  Bits [31:1] are writable. Writing a non-zero value then zero toggles them.
-  With MHPMCounterNum=0 only bits 0 (cycle) and 2 (instret) have hardware,
-  but the register bits are still writable.
+  1 NEEDS bins (known stimulus exists) + 150 REACHABLE? bins.
+  Core — bt_a_operand is the A input to the branch adder (PC for JAL/branches, rs1 for JALR). bt_b_operand is the B input (imm). To set bt_a_operand[N]: the PC must have bit N set, which happens naturally as the program runs (PC=0x80000000+offset). rf_wdata_fwd_wb[N]: register write data forwarded from WB — use MUL/DIV with x17/x18/x22/x23 to produce diverse result bits. csr_mtvec[N]: write diverse values to mtvec with CSRRW before triggering an exception — mtvec base bits [31:2] are all writable.
 
 SIGNALS:
-  ibex_cs_registers              mcountinhibit[10]
-  ibex_cs_registers              mcountinhibit[11]
-  ibex_cs_registers              mcountinhibit[12]
-  ibex_cs_registers              mcountinhibit[13]
-  ibex_cs_registers              mcountinhibit[14]
-  ibex_cs_registers              mcountinhibit[15]
-  ibex_cs_registers              mcountinhibit[16]
-  ibex_cs_registers              mcountinhibit[17]
-  ibex_cs_registers              mcountinhibit[18]
-  ibex_cs_registers              mcountinhibit[19]
-  ibex_cs_registers              mcountinhibit[1]
-  ibex_cs_registers              mcountinhibit[20]
-  ibex_cs_registers              mcountinhibit[21]
-  ibex_cs_registers              mcountinhibit[22]
-  ibex_cs_registers              mcountinhibit[23]
-  ibex_cs_registers              mcountinhibit[24]
-  ibex_cs_registers              mcountinhibit[25]
-  ibex_cs_registers              mcountinhibit[26]
-  ibex_cs_registers              mcountinhibit[27]
-  ibex_cs_registers              mcountinhibit[28]
-  ibex_cs_registers              mcountinhibit[29]
-  ibex_cs_registers              mcountinhibit[30]
-  ibex_cs_registers              mcountinhibit[31]
-  ibex_cs_registers              mcountinhibit[3]
-  ibex_cs_registers              mcountinhibit[4]
-  ibex_cs_registers              mcountinhibit[5]
-  ibex_cs_registers              mcountinhibit[6]
-  ibex_cs_registers              mcountinhibit[7]
-  ibex_cs_registers              mcountinhibit[8]
-  ibex_cs_registers              mcountinhibit[9]
+  line_334     csr_mtval[2]
+  line_185     imd_val_d_ex[1][32]
+  line_256     bt_a_operand[27]
+  line_257     bt_b_operand[4]
+  line_333     csr_mtvec[5]
+  line_239     rf_wdata_fwd_wb[27]
+  line_58      instr_addr_o[0]
+  line_239     rf_wdata_fwd_wb[1]
+  line_60      instr_err_i
+  line_239     rf_wdata_fwd_wb[5]
+  line_257     bt_b_operand[17]
+  line_256     bt_a_operand[28]
+  line_239     rf_wdata_fwd_wb[19]
+  line_256     bt_a_operand[5]
+  line_256     bt_a_operand[31]
+  line_239     rf_wdata_fwd_wb[6]
+  line_256     bt_a_operand[2]
+  line_257     bt_b_operand[5]
+  line_352     instr_done_wb
+  line_184     pc_wb[14]
+  line_184     pc_wb[15]
+  line_257     bt_b_operand[28]
+  line_256     bt_a_operand[15]
+  line_257     bt_b_operand[12]
+  line_256     bt_a_operand[8]
+  line_182     pc_if[0]
+  line_257     bt_b_operand[9]
+  line_239     rf_wdata_fwd_wb[21]
+  line_239     rf_wdata_fwd_wb[4]
+  line_184     pc_wb[19]
+  line_333     csr_mtvec[2]
+  line_257     bt_b_operand[26]
+  line_257     bt_b_operand[10]
+  line_256     bt_a_operand[30]
+  line_68      data_addr_o[1]
+  line_239     rf_wdata_fwd_wb[12]
+  line_239     rf_wdata_fwd_wb[11]
+  line_256     bt_a_operand[22]
+  line_239     rf_wdata_fwd_wb[10]
+  line_1249    captured_valid
+  line_239     rf_wdata_fwd_wb[16]
+  line_184     pc_wb[12]
+  line_252     alu_operator_ex[6]
+  line_256     bt_a_operand[19]
+  line_326     csr_save_if
+  line_256     bt_a_operand[25]
+  line_207     exc_cause.lower_cause[4]
+  line_205     pc_mux_id[2]
+  line_256     bt_a_operand[29]
+  line_239     rf_wdata_fwd_wb[7]
+  line_184     pc_wb[24]
+  line_239     rf_wdata_fwd_wb[24]
+  line_108     crash_dump_o.next_pc[0]
+  line_257     bt_b_operand[3]
+  line_185     imd_val_d_ex[1][33]
+  line_257     bt_b_operand[1]
+  line_257     bt_b_operand[2]
+  line_256     bt_a_operand[13]
+  line_257     bt_b_operand[29]
+  line_239     rf_wdata_fwd_wb[14]
+  line_239     rf_wdata_fwd_wb[23]
+  line_257     bt_b_operand[6]
+  line_257     bt_b_operand[0]
+  line_257     bt_b_operand[25]
+  line_256     bt_a_operand[12]
+  line_239     rf_wdata_fwd_wb[30]
+  line_256     bt_a_operand[14]
+  line_184     pc_wb[5]
+  line_333     csr_mtvec[3]
+  line_257     bt_b_operand[19]
+  line_256     bt_a_operand[9]
+  line_58      instr_addr_o[1]
+  line_257     bt_b_operand[18]
+  line_328     csr_save_wb
+  line_256     bt_a_operand[7]
+  line_257     bt_b_operand[11]
+  line_239     rf_wdata_fwd_wb[13]
+  line_306     instr_type_wb[0]
+  line_256     bt_a_operand[4]
+  line_1246    captured_nmi
+  line_184     pc_wb[4]
+  line_1242    new_nmi
+  line_239     rf_wdata_fwd_wb[9]
+  line_181     illegal_c_insn_id
+  line_239     rf_wdata_fwd_wb[26]
+  line_239     rf_wdata_fwd_wb[17]
+  line_184     pc_wb[26]
+  line_184     pc_wb[20]
+  line_327     csr_save_id
+  line_184     pc_wb[16]
+  line_184     pc_wb[25]
+  line_256     bt_a_operand[24]
+  line_256     bt_a_operand[21]
+  line_257     bt_b_operand[22]
+  line_256     bt_a_operand[1]
+  line_257     bt_b_operand[13]
+  line_309     outstanding_load_wb
+  line_256     bt_a_operand[23]
+  line_239     rf_wdata_fwd_wb[31]
+  line_184     pc_wb[28]
+  line_184     pc_wb[29]
+  line_184     pc_wb[21]
+  line_257     bt_b_operand[14]
+  line_239     rf_wdata_fwd_wb[8]
+  line_184     pc_wb[17]
+  line_256     bt_a_operand[6]
+  line_71      data_err_i
+  line_207     exc_cause.lower_cause[2]
+  line_257     bt_b_operand[15]
+  line_184     pc_wb[31]
+  line_239     rf_wdata_fwd_wb[0]
+  line_184     pc_wb[30]
+  line_256     bt_a_operand[11]
+  line_184     pc_wb[6]
+  line_184     pc_wb[3]
+  line_257     bt_b_operand[7]
+  line_178     instr_bp_taken_id
+  line_333     csr_mtvec[4]
+  line_256     bt_a_operand[26]
+  line_239     rf_wdata_fwd_wb[25]
+  line_183     pc_id[0]
+  line_256     bt_a_operand[0]
+  line_184     pc_wb[22]
+  line_257     bt_b_operand[24]
+  line_257     bt_b_operand[23]
+  line_257     bt_b_operand[16]
+  line_179     instr_fetch_err
+  line_333     csr_mtvec[6]
+  line_210     lsu_load_err
+  line_239     rf_wdata_fwd_wb[18]
+  line_257     bt_b_operand[30]
+  line_239     rf_wdata_fwd_wb[22]
+  line_1244    new_irq
+  line_239     rf_wdata_fwd_wb[29]
+  line_239     rf_wdata_fwd_wb[28]
+  line_256     bt_a_operand[20]
+  line_184     pc_wb[7]
+  line_256     bt_a_operand[16]
+  line_256     bt_a_operand[18]
+  line_256     bt_a_operand[10]
+  line_257     bt_b_operand[20]
+  line_239     rf_wdata_fwd_wb[2]
+  line_257     bt_b_operand[8]
+  line_239     rf_wdata_fwd_wb[3]
+  line_239     rf_wdata_fwd_wb[15]
+  line_211     lsu_store_err
+  line_310     outstanding_store_wb
+  line_257     bt_b_operand[27]
+  line_184     pc_wb[18]
+  line_257     bt_b_operand[21]
+  line_184     pc_wb[13]
 
 SUGGESTED PROGRAM:
-  li   t0, 0xFFFFFFFF     # set all mcountinhibit bits
-  csrw 0x320, t0          # write mcountinhibit
-  csrw 0x320, zero        # clear → toggle back
-  li   t0, 0x00000002     # bit 1
-  csrw 0x320, t0
-  csrw 0x320, zero
+[{"op":"LUI","rd":5,"rs1":0,"rs2":0,"imm_bucket":3},
+ {"op":"AUIPC","rd":6,"rs1":0,"rs2":0,"imm_bucket":2},
+ {"op":"MUL","rd":7,"rs1":5,"rs2":6,"imm_bucket":0},
+ {"op":"ADD","rd":8,"rs1":7,"rs2":5,"imm_bucket":0},
+ {"op":"BEQ","rd":0,"rs1":8,"rs2":5,"imm_bucket":1},
+ {"op":"JALR","rd":1,"rs1":6,"rs2":0,"imm_bucket":0}]
 
 ======================================================================
-GROUP 2: mtvec low bits (21 bins)
-======================================================================
+GROUP 2: ibex_id_stage (151 bins)
 
 EXPLANATION:
-  mtvec (CSR 0x305) holds the trap vector base address.
-  Bits [7:1] are rarely written. Bit 0 = mode (0=direct, 1=vectored).
-  Write 0xFE then 0x00 to toggle bits [7:1].
+  1 NEEDS bins (known stimulus exists) + 150 REACHABLE? bins.
+  ID stage — operand mux selects and use_rs signals. alu_op_a/b_mux_sel toggles with instruction type changes. Mix R-type (uses rs1+rs2), I-type (uses rs1+imm), U-type (uses PC+imm for AUIPC, zero+imm for LUI), branches (rs1+rs2 compared, PC+imm for target). use_rs1/use_rs2 signals toggle when instruction type changes.
 
 SIGNALS:
-  ibex_core                      csr_mtvec[1]
-  ibex_core                      csr_mtvec[2]
-  ibex_core                      csr_mtvec[3]
-  ibex_core                      csr_mtvec[4]
-  ibex_core                      csr_mtvec[5]
-  ibex_core                      csr_mtvec[6]
-  ibex_core                      csr_mtvec[7]
-  ibex_cs_registers              mtvec_d[1]
-  ibex_cs_registers              mtvec_d[2]
-  ibex_cs_registers              mtvec_d[3]
-  ibex_cs_registers              mtvec_d[4]
-  ibex_cs_registers              mtvec_d[5]
-  ibex_cs_registers              mtvec_d[6]
-  ibex_cs_registers              mtvec_d[7]
-  ibex_if_stage                  csr_mtvec_i[1]
-  ibex_if_stage                  csr_mtvec_i[2]
-  ibex_if_stage                  csr_mtvec_i[3]
-  ibex_if_stage                  csr_mtvec_i[4]
-  ibex_if_stage                  csr_mtvec_i[5]
-  ibex_if_stage                  csr_mtvec_i[6]
-  ibex_if_stage                  csr_mtvec_i[7]
+  line_105     csr_mtval_o[2]
+  line_81      bt_a_operand_o[8]
+  line_238     zimm_rs1_type[15]
+  line_265     stall_alu
+  line_240     imm_a[6]
+  line_236     imm_u_type[6]
+  line_81      bt_a_operand_o[27]
+  line_62      instr_fetch_err_i
+  line_238     zimm_rs1_type[8]
+  line_236     imm_u_type[8]
+  line_236     imm_u_type[3]
+  line_226     stall_wb
+  line_270     bt_b_mux_sel[1]
+  line_240     imm_a[9]
+  line_240     imm_a[10]
+  line_81      bt_a_operand_o[11]
+  line_59      exc_cause_o.lower_cause[2]
+  line_238     zimm_rs1_type[11]
+  line_236     imm_u_type[9]
+  line_238     zimm_rs1_type[10]
+  line_135     lsu_store_err_i
+  line_195     illegal_dret_insn
+  line_59      exc_cause_o.lower_cause[4]
+  line_240     imm_a[28]
+  line_82      bt_b_operand_o[25]
+  line_82      bt_b_operand_o[6]
+  line_199     dret_insn_dec
+  line_240     imm_a[5]
+  line_42      instr_bp_taken_i
+  line_237     imm_j_type[0]
+  line_209     branch_not_set
+  line_270     bt_b_mux_sel[0]
+  line_220     stall_ld_hz
+  line_81      bt_a_operand_o[4]
+  line_82      bt_b_operand_o[15]
+  line_81      bt_a_operand_o[13]
+  line_81      bt_a_operand_o[24]
+  line_240     imm_a[20]
+  line_82      bt_b_operand_o[13]
+  line_81      bt_a_operand_o[5]
+  line_81      bt_a_operand_o[29]
+  line_81      bt_a_operand_o[1]
+  line_77      imd_val_d_ex_i[1][32]
+  line_82      bt_b_operand_o[16]
+  line_78      imd_val_q_ex_o[1][33]
+  line_236     imm_u_type[1]
+  line_238     zimm_rs1_type[16]
+  line_63      instr_fetch_err_plus2_i
+  line_81      bt_a_operand_o[21]
+  line_58      exc_pc_mux_o[1]
+  line_240     imm_a[29]
+  line_82      bt_b_operand_o[23]
+  line_238     zimm_rs1_type[6]
+  line_81      bt_a_operand_o[16]
+  line_81      bt_a_operand_o[2]
+  line_236     imm_u_type[2]
+  line_82      bt_b_operand_o[14]
+  line_82      bt_b_operand_o[18]
+  line_82      bt_b_operand_o[12]
+  line_238     zimm_rs1_type[13]
+  line_82      bt_b_operand_o[26]
+  line_77      imd_val_d_ex_i[1][33]
+  line_235     imm_b_type[0]
+  line_238     zimm_rs1_type[25]
+  line_82      bt_b_operand_o[22]
+  line_81      bt_a_operand_o[31]
+  line_82      bt_b_operand_o[10]
+  line_238     zimm_rs1_type[24]
+  line_82      bt_b_operand_o[1]
+  line_81      bt_a_operand_o[28]
+  line_238     zimm_rs1_type[30]
+  line_61      illegal_c_insn_i
+  line_238     zimm_rs1_type[5]
+  line_99      csr_save_if_o
+  line_240     imm_a[27]
+  line_82      bt_b_operand_o[5]
+  line_240     imm_a[25]
+  line_82      bt_b_operand_o[2]
+  line_82      bt_b_operand_o[9]
+  line_236     imm_u_type[5]
+  line_238     zimm_rs1_type[17]
+  line_81      bt_a_operand_o[14]
+  line_240     imm_a[15]
+  line_238     zimm_rs1_type[31]
+  line_82      bt_b_operand_o[28]
+  line_82      bt_b_operand_o[4]
+  line_71      alu_operator_ex_o[6]
+  line_238     zimm_rs1_type[21]
+  line_81      bt_a_operand_o[9]
+  line_236     imm_u_type[11]
+  line_240     imm_a[21]
+  line_78      imd_val_q_ex_o[1][32]
+  line_240     imm_a[26]
+  line_100     csr_save_id_o
+  line_81      bt_a_operand_o[6]
+  line_240     imm_a[16]
+  line_236     imm_u_type[7]
+  line_240     imm_a[13]
+  line_82      bt_b_operand_o[17]
+  line_238     zimm_rs1_type[12]
+  line_81      bt_a_operand_o[20]
+  line_238     zimm_rs1_type[23]
+  line_238     zimm_rs1_type[22]
+  line_240     imm_a[18]
+  line_82      bt_b_operand_o[24]
+  line_269     bt_a_mux_sel[0]
+  line_82      bt_b_operand_o[31]
+  line_203     wb_exception
+  line_238     zimm_rs1_type[29]
+  line_236     imm_u_type[10]
+  line_240     imm_a[11]
+  line_81      bt_a_operand_o[25]
+  line_81      bt_a_operand_o[17]
+  line_82      bt_b_operand_o[8]
+  line_240     imm_a[8]
+  line_81      bt_a_operand_o[19]
+  line_240     imm_a[7]
+  line_240     imm_a[17]
+  line_81      bt_a_operand_o[12]
+  line_236     imm_u_type[0]
+  line_240     imm_a[30]
+  line_240     imm_a[23]
+  line_82      bt_b_operand_o[20]
+  line_238     zimm_rs1_type[20]
+  line_238     zimm_rs1_type[19]
+  line_240     imm_a[22]
+  line_81      bt_a_operand_o[30]
+  line_240     imm_a[19]
+  line_82      bt_b_operand_o[19]
+  line_264     alu_multicycle_dec
+  line_82      bt_b_operand_o[29]
+  line_238     zimm_rs1_type[14]
+  line_238     zimm_rs1_type[7]
+  line_55      pc_mux_o[2]
+  line_81      bt_a_operand_o[7]
+  line_81      bt_a_operand_o[18]
+  line_238     zimm_rs1_type[27]
+  line_82      bt_b_operand_o[27]
+  line_133     lsu_load_err_i
+  line_81      bt_a_operand_o[0]
+  line_240     imm_a[14]
+  line_240     imm_a[31]
+  line_81      bt_a_operand_o[23]
+  line_240     imm_a[12]
+  line_81      bt_a_operand_o[15]
+  line_238     zimm_rs1_type[9]
+  line_82      bt_b_operand_o[3]
+  line_81      bt_a_operand_o[22]
+  line_236     imm_u_type[4]
+  line_270     bt_b_mux_sel[2]
+  line_238     zimm_rs1_type[28]
 
 SUGGESTED PROGRAM:
-  li   t0, 0x000000FE     # bits [7:1] set, bit 0 = 0 (direct mode)
-  csrw mtvec, t0
-  csrw mtvec, zero        # clear → toggle back
-  li   t0, 0x000000FF     # all low bits set (vectored mode)
-  csrw mtvec, t0
-  csrw mtvec, zero
+(see hint above)
 
 ======================================================================
-GROUP 3: Exception / CSR save paths (11 bins)
-======================================================================
+GROUP 3: ibex_decoder (53 bins)
 
 EXPLANATION:
-  csr_save_id/if: pulsed for 1 cycle when CPU saves CSRs on exception entry.
-  exc_pc[7:1]: exception PC lower bits (can vary with RVC compressed instructions).
-  mepc[0]: exception PC bit 0 (set for compressed instruction exceptions).
-  Trigger exceptions via illegal instruction or misaligned load/store.
+  12 NEEDS bins (known stimulus exists) + 41 REACHABLE? bins.
+  Decoder signals — imm_u_type (bits 31-12, set by LUI/AUIPC), zimm_rs1_type (5-bit CSR immediate, set by CSRRWI/CSRRSI/CSRRCI). Use LUI imm_bucket=3 (0xFFFFF<<12) and imm_bucket=4 (0x80000<<12) to set upper bits. Use CSRRWI/CSRRSI/CSRRCI with rs1=31 (imm=31) to exercise zimm bits. AUIPC sets imm_u_type from PC+imm.
 
 SIGNALS:
-  ibex_core                      csr_save_id
-  ibex_core                      csr_save_if
-  ibex_id_stage                  csr_save_id_o
-  ibex_id_stage                  csr_save_if_o
-  ibex_if_stage                  exc_pc[1]
-  ibex_if_stage                  exc_pc[2]
-  ibex_if_stage                  exc_pc[3]
-  ibex_if_stage                  exc_pc[4]
-  ibex_if_stage                  exc_pc[5]
-  ibex_if_stage                  exc_pc[6]
-  ibex_if_stage                  exc_pc[7]
+  line_53      imm_u_type_o[0]
+  line_53      imm_u_type_o[1]
+  line_53      imm_u_type_o[5]
+  line_53      imm_u_type_o[2]
+  line_53      imm_u_type_o[8]
+  line_53      imm_u_type_o[10]
+  line_53      imm_u_type_o[4]
+  line_53      imm_u_type_o[3]
+  line_53      imm_u_type_o[11]
+  line_53      imm_u_type_o[7]
+  line_53      imm_u_type_o[9]
+  line_53      imm_u_type_o[6]
+  line_49      bt_b_mux_sel_o[0]
+  line_67      alu_operator_o[6]
+  line_55      zimm_rs1_type_o[23]
+  line_55      zimm_rs1_type_o[17]
+  line_104     csr_illegal
+  line_55      zimm_rs1_type_o[26]
+  line_55      zimm_rs1_type_o[24]
+  line_55      zimm_rs1_type_o[25]
+  line_55      zimm_rs1_type_o[11]
+  line_55      zimm_rs1_type_o[28]
+  line_48      bt_a_mux_sel_o[0]
+  line_55      zimm_rs1_type_o[18]
+  line_30      dret_insn_o
+  line_55      zimm_rs1_type_o[21]
+  line_116     use_rs3_d
+  line_55      zimm_rs1_type_o[13]
+  line_55      zimm_rs1_type_o[5]
+  line_55      zimm_rs1_type_o[9]
+  line_55      zimm_rs1_type_o[10]
+  line_49      bt_b_mux_sel_o[1]
+  line_55      zimm_rs1_type_o[22]
+  line_55      zimm_rs1_type_o[20]
+  line_43      illegal_c_insn_i
+  line_117     use_rs3_q
+  line_49      bt_b_mux_sel_o[2]
+  line_55      zimm_rs1_type_o[27]
+  line_55      zimm_rs1_type_o[6]
+  line_55      zimm_rs1_type_o[12]
+  line_55      zimm_rs1_type_o[16]
+  line_54      imm_j_type_o[0]
+  line_55      zimm_rs1_type_o[19]
+  line_55      zimm_rs1_type_o[30]
+  line_55      zimm_rs1_type_o[29]
+  line_72      alu_multicycle_o
+  line_55      zimm_rs1_type_o[8]
+  line_103     illegal_reg_rv32e
+  line_55      zimm_rs1_type_o[14]
+  line_55      zimm_rs1_type_o[7]
+  line_55      zimm_rs1_type_o[15]
+  line_55      zimm_rs1_type_o[31]
+  line_52      imm_b_type_o[0]
 
 SUGGESTED PROGRAM:
-  la   t0, trap_handler
-  csrw mtvec, t0          # set trap handler
-  # illegal instruction exception (mcause=2)
-  .word 0x0000000B        # CUSTOM-0 → illegal
-  # misaligned load (mcause=4, mtval=fault addr)
-  li   t0, 0x80000001
-  lw   t1, 0(t0)          # misaligned → exception
-  # misaligned store (mcause=6)
-  li   t0, 0x80000003
-  sw   t1, 0(t0)
-  j    done
-trap_handler:
-  csrr t0, mepc
-  csrr t1, mcause
-  csrr t2, mtval
-  addi t0, t0, 4
-  csrw mepc, t0
-  mret
-done:
+[{"op":"LUI","rd":5,"rs1":0,"rs2":0,"imm_bucket":3},
+ {"op":"LUI","rd":6,"rs1":0,"rs2":0,"imm_bucket":4},
+ {"op":"AUIPC","rd":7,"rs1":0,"rs2":0,"imm_bucket":2},
+ {"op":"CSRRWI","rd":8,"rs1":31,"rs2":0,"imm_bucket":4},
+ {"op":"CSRRSI","rd":9,"rs1":15,"rs2":0,"imm_bucket":2},
+ {"op":"CSRRCI","rd":10,"rs1":7,"rs2":0,"imm_bucket":1}]
 
 ======================================================================
-GROUP 4: Immediate upper bits (27 bins)
-======================================================================
+GROUP 4: ibex_ex_block (135 bins)
 
 EXPLANATION:
-  imm_a[31:10]: upper bits of immediates used as ALU operand A.
-  These come from LUI/AUIPC 20-bit immediates or CSR zimm_rs1 field.
-  Use large, varied immediate values.
+  Execute block — alu_imd_val_d[0] is the MUL/DIV intermediate accumulator. It holds partial products during multi-cycle multiply. Use ALL multiply variants: MUL, MULH (signed×signed high), MULHSU (signed×unsigned high), MULHU (unsigned×unsigned high), DIV, DIVU, REM, REMU. Use operands x17 (0x7FFFFFFF) and x18 (0x80000000) to exercise sign-bit paths in imd_val.
 
 SIGNALS:
-  ibex_id_stage                  imm_a[10]
-  ibex_id_stage                  imm_a[11]
-  ibex_id_stage                  imm_a[12]
-  ibex_id_stage                  imm_a[13]
-  ibex_id_stage                  imm_a[14]
-  ibex_id_stage                  imm_a[15]
-  ibex_id_stage                  imm_a[16]
-  ibex_id_stage                  imm_a[17]
-  ibex_id_stage                  imm_a[18]
-  ibex_id_stage                  imm_a[19]
-  ibex_id_stage                  imm_a[20]
-  ibex_id_stage                  imm_a[21]
-  ibex_id_stage                  imm_a[22]
-  ibex_id_stage                  imm_a[23]
-  ibex_id_stage                  imm_a[24]
-  ibex_id_stage                  imm_a[25]
-  ibex_id_stage                  imm_a[26]
-  ibex_id_stage                  imm_a[27]
-  ibex_id_stage                  imm_a[28]
-  ibex_id_stage                  imm_a[29]
-  ibex_id_stage                  imm_a[30]
-  ibex_id_stage                  imm_a[31]
-  ibex_id_stage                  imm_a[5]
-  ibex_id_stage                  imm_a[6]
-  ibex_id_stage                  imm_a[7]
-  ibex_id_stage                  imm_a[8]
-  ibex_id_stage                  imm_a[9]
+  line_28      bt_b_operand_i[29]
+  line_66      alu_imd_val_d[0][18]
+  line_28      bt_b_operand_i[18]
+  line_66      alu_imd_val_d[0][8]
+  line_66      alu_imd_val_d[1][9]
+  line_27      bt_a_operand_i[29]
+  line_66      alu_imd_val_d[0][7]
+  line_28      bt_b_operand_i[10]
+  line_66      alu_imd_val_d[0][30]
+  line_27      bt_a_operand_i[25]
+  line_66      alu_imd_val_d[0][12]
+  line_66      alu_imd_val_d[1][16]
+  line_27      bt_a_operand_i[2]
+  line_27      bt_a_operand_i[10]
+  line_66      alu_imd_val_d[1][14]
+  line_66      alu_imd_val_d[1][24]
+  line_28      bt_b_operand_i[3]
+  line_28      bt_b_operand_i[2]
+  line_27      bt_a_operand_i[31]
+  line_66      alu_imd_val_d[1][19]
+  line_66      alu_imd_val_d[1][26]
+  line_66      alu_imd_val_d[0][27]
+  line_66      alu_imd_val_d[0][25]
+  line_66      alu_imd_val_d[0][23]
+  line_27      bt_a_operand_i[20]
+  line_66      alu_imd_val_d[1][10]
+  line_28      bt_b_operand_i[24]
+  line_66      alu_imd_val_d[1][29]
+  line_66      alu_imd_val_d[1][22]
+  line_66      alu_imd_val_d[0][2]
+  line_66      alu_imd_val_d[1][5]
+  line_27      bt_a_operand_i[15]
+  line_28      bt_b_operand_i[1]
+  line_27      bt_a_operand_i[28]
+  line_27      bt_a_operand_i[9]
+  line_27      bt_a_operand_i[17]
+  line_66      alu_imd_val_d[1][12]
+  line_66      alu_imd_val_d[1][20]
+  line_66      alu_imd_val_d[0][10]
+  line_28      bt_b_operand_i[15]
+  line_28      bt_b_operand_i[17]
+  line_28      bt_b_operand_i[27]
+  line_66      alu_imd_val_d[0][17]
+  line_28      bt_b_operand_i[11]
+  line_66      alu_imd_val_d[0][19]
+  line_68      multdiv_imd_val_d[1][32]
+  line_27      bt_a_operand_i[24]
+  line_66      alu_imd_val_d[1][3]
+  line_67      alu_imd_val_we[1]
+  line_66      alu_imd_val_d[1][8]
+  line_66      alu_imd_val_d[1][21]
+  line_28      bt_b_operand_i[20]
+  line_66      alu_imd_val_d[0][13]
+  line_66      alu_imd_val_d[1][28]
+  line_28      bt_b_operand_i[9]
+  line_27      bt_a_operand_i[14]
+  line_66      alu_imd_val_d[0][4]
+  line_66      alu_imd_val_d[0][3]
+  line_28      bt_b_operand_i[4]
+  line_66      alu_imd_val_d[0][16]
+  line_20      alu_operator_i[6]
+  line_28      bt_b_operand_i[16]
+  line_66      alu_imd_val_d[1][25]
+  line_27      bt_a_operand_i[3]
+  line_27      bt_a_operand_i[18]
+  line_27      bt_a_operand_i[11]
+  line_28      bt_b_operand_i[23]
+  line_66      alu_imd_val_d[1][1]
+  line_66      alu_imd_val_d[1][13]
+  line_66      alu_imd_val_d[0][6]
+  line_28      bt_b_operand_i[13]
+  line_28      bt_b_operand_i[8]
+  line_66      alu_imd_val_d[0][31]
+  line_28      bt_b_operand_i[25]
+  line_66      alu_imd_val_d[0][22]
+  line_66      alu_imd_val_d[1][11]
+  line_27      bt_a_operand_i[6]
+  line_66      alu_imd_val_d[0][29]
+  line_66      alu_imd_val_d[1][23]
+  line_66      alu_imd_val_d[0][28]
+  line_66      alu_imd_val_d[0][21]
+  line_66      alu_imd_val_d[0][0]
+  line_66      alu_imd_val_d[0][20]
+  line_27      bt_a_operand_i[8]
+  line_27      bt_a_operand_i[1]
+  line_66      alu_imd_val_d[1][7]
+  line_67      alu_imd_val_we[0]
+  line_66      alu_imd_val_d[1][15]
+  line_27      bt_a_operand_i[16]
+  line_27      bt_a_operand_i[27]
+  line_66      alu_imd_val_d[1][27]
+  line_27      bt_a_operand_i[13]
+  line_66      alu_imd_val_d[1][31]
+  line_66      alu_imd_val_d[1][4]
+  line_27      bt_a_operand_i[22]
+  line_66      alu_imd_val_d[0][14]
+  line_66      alu_imd_val_d[1][2]
+  line_28      bt_b_operand_i[28]
+  line_27      bt_a_operand_i[26]
+  line_66      alu_imd_val_d[0][1]
+  line_28      bt_b_operand_i[5]
+  line_66      alu_imd_val_d[1][17]
+  line_28      bt_b_operand_i[6]
+  line_28      bt_b_operand_i[21]
+  line_27      bt_a_operand_i[19]
+  line_28      bt_b_operand_i[22]
+  line_44      imd_val_d_o[1][32]
+  line_27      bt_a_operand_i[0]
+  line_27      bt_a_operand_i[5]
+  line_27      bt_a_operand_i[23]
+  line_28      bt_b_operand_i[26]
+  line_66      alu_imd_val_d[0][15]
+  line_66      alu_imd_val_d[0][9]
+  line_66      alu_imd_val_d[1][0]
+  line_27      bt_a_operand_i[12]
+  line_27      bt_a_operand_i[4]
+  line_28      bt_b_operand_i[19]
+  line_66      alu_imd_val_d[1][18]
+  line_28      bt_b_operand_i[0]
+  line_66      alu_imd_val_d[1][6]
+  line_66      alu_imd_val_d[0][11]
+  line_27      bt_a_operand_i[7]
+  line_28      bt_b_operand_i[7]
+  line_66      alu_imd_val_d[0][26]
+  line_66      alu_imd_val_d[0][24]
+  line_28      bt_b_operand_i[12]
+  line_66      alu_imd_val_d[0][5]
+  line_28      bt_b_operand_i[30]
+  line_27      bt_a_operand_i[21]
+  line_44      imd_val_d_o[1][33]
+  line_66      alu_imd_val_d[1][30]
+  line_28      bt_b_operand_i[31]
+  line_28      bt_b_operand_i[14]
+  line_68      multdiv_imd_val_d[1][33]
+  line_27      bt_a_operand_i[30]
 
 SUGGESTED PROGRAM:
-  lui  t0, 0xFFFFF        # bits [31:12] all 1
-  lui  t1, 0x80000        # bit 31 set
-  lui  t2, 0x55555        # alternating bits
-  lui  t3, 0xAAAAA        # alternating bits inverted
-  auipc t4, 0xFFFFF       # PC-relative large immediate
-  auipc t5, 0x7FFFF
-  # CSR immediate (5-bit zimm field)
-  csrrwi t0, mstatus, 0x1F  # zimm = 0x1F (all 5 bits set)
-  csrrwi t0, mstatus, 0x00
+[{"op":"MUL","rd":5,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"MULH","rd":6,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"MULHSU","rd":7,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"MULHU","rd":8,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"DIV","rd":9,"rs1":22,"rs2":23,"imm_bucket":0},
+ {"op":"REM","rd":10,"rs1":22,"rs2":23,"imm_bucket":0}]
 
 ======================================================================
-GROUP 5: CSR read data bits (16 bins)
-======================================================================
+GROUP 5: ibex_cs_registers (27 bins)
 
 EXPLANATION:
-  rd_data_o / rdata_q: data output of the CSR register file.
-  These bits toggle when reading CSRs that contain non-zero values.
-  Read various CSRs after writing non-zero values to them.
+  9 NEEDS bins (known stimulus exists) + 18 REACHABLE? bins.
+  CS registers — mtvec BASE bits [31:2] ARE writable (bits [1:0] are MODE, bit 1 is always 0). Write 0x12345678 to mtvec with CSRRW then trigger ECALL to exercise mtvec_q[2-7] and csr_mtvec_o bits. mcountinhibit[0]=CY (cycle inhibit) and [2]=IR (instret inhibit) are writable; bits 3-31 are tied off (MHPMCounterNum=0). csr_save_if_i/csr_save_id_i go high during exception entry — trigger with ECALL. exception_pc bits come from the PC at trap.
 
 SIGNALS:
-  ibex_csr                       rd_data_o[0]
-  ibex_csr                       rd_data_o[1]
-  ibex_csr                       rd_data_o[2]
-  ibex_csr                       rd_data_o[3]
-  ibex_csr                       rd_data_o[4]
-  ibex_csr                       rd_data_o[5]
-  ibex_csr                       rd_data_o[6]
-  ibex_csr                       rd_data_o[7]
-  ibex_csr                       rdata_q[0]
-  ibex_csr                       rdata_q[1]
-  ibex_csr                       rdata_q[2]
-  ibex_csr                       rdata_q[3]
-  ibex_csr                       rdata_q[4]
-  ibex_csr                       rdata_q[5]
-  ibex_csr                       rdata_q[6]
-  ibex_csr                       rdata_q[7]
+  line_225     mtvec_q[4]
+  line_225     mtvec_q[7]
+  line_225     mtvec_q[6]
+  line_102     csr_mcause_i.lower_cause[2]
+  line_103     csr_mtval_i[2]
+  line_102     csr_mcause_i.lower_cause[4]
+  line_225     mtvec_q[5]
+  line_225     mtvec_q[2]
+  line_225     mtvec_q[3]
+  line_225     mtvec_d[6]
+  line_225     mtvec_d[4]
+  line_225     mtvec_d[5]
+  line_41      csr_mtvec_o[6]
+  line_41      csr_mtvec_o[5]
+  line_41      csr_mtvec_o[2]
+  line_97      csr_save_id_i
+  line_96      csr_save_if_i
+  line_112     instr_ret_compressed_spec_i
+  line_225     mtvec_d[2]
+  line_253     mcountinhibit_d[1]
+  line_225     mtvec_d[3]
+  line_41      csr_mtvec_o[3]
+  line_225     mtvec_d[7]
+  line_41      csr_mtvec_o[4]
+  line_111     instr_ret_spec_i
+  line_41      csr_mtvec_o[7]
+  line_253     mcountinhibit_q[1]
 
 SUGGESTED PROGRAM:
-  # Write then read back various CSRs
-  li   t0, 0xFF
-  csrw mtvec, t0
-  csrr t1, mtvec          # read back → rd_data_o gets 0xFF
-  csrw mtvec, zero
-  csrr t1, mtvec          # read back → rd_data_o gets 0
-  # cycle counter
-  csrr t0, mcycle         # read cycle count (non-zero after execution)
-  csrr t1, minstret       # read instruction count
-  # mstatus
-  li   t0, 0x8
-  csrw mstatus, t0
-  csrr t1, mstatus
+[{"op":"LUI","rd":5,"rs1":0,"rs2":0,"imm_bucket":2},
+ {"op":"CSRRW","rd":6,"rs1":5,"rs2":0,"imm_bucket":1},
+ {"op":"ECALL","rd":0,"rs1":0,"rs2":0,"imm_bucket":0},
+ {"op":"CSRRS","rd":7,"rs1":0,"rs2":0,"imm_bucket":0},
+ {"op":"ADDI","rd":8,"rs1":0,"rs2":0,"imm_bucket":4},
+ {"op":"CSRRW","rd":9,"rs1":8,"rs2":0,"imm_bucket":0}]
 
 ======================================================================
-GROUP 6: Data/instruction address low bits (3 bins)
-======================================================================
+GROUP 6: ibex_alu (107 bins)
 
 EXPLANATION:
-  data_addr_o[0]: can be 1 with byte loads/stores (LB/SB) to odd addresses.
-  data_addr_o[1]: can be 1 with byte/halfword ops to 0x2/0x6/... addresses.
-  instr_addr_o[1]: can be 1 with RVC compressed instructions at 2-byte PCs.
-  Use byte and halfword memory operations with varied addresses.
+  ALU — adder_result, shift_result, comparison_result intermediate wires. Use: ADD/SUB with x17(INT_MAX)+x18(INT_MIN) for overflow paths, SLL/SRL/SRA with x19(0x55555555) and x21(0xAAAAAAAA) for shift paths, SLT/SLTU with negative vs positive values for comparison paths, XOR/OR/AND with x16(0xFFFFFFFF) for logic paths.
 
 SIGNALS:
-  ibex_core                      data_addr_o[0]
-  ibex_core                      data_addr_o[1]
-  ibex_core                      instr_addr_o[1]
+  line_24      imd_val_d_o[1][8]
+  line_24      imd_val_d_o[0][13]
+  line_402     sext_result[29]
+  line_24      imd_val_d_o[0][1]
+  line_24      imd_val_d_o[1][3]
+  line_402     sext_result[28]
+  line_402     sext_result[7]
+  line_24      imd_val_d_o[1][25]
+  line_24      imd_val_d_o[0][12]
+  line_24      imd_val_d_o[1][16]
+  line_24      imd_val_d_o[0][14]
+  line_24      imd_val_d_o[0][21]
+  line_402     sext_result[26]
+  line_402     sext_result[18]
+  line_24      imd_val_d_o[0][23]
+  line_24      imd_val_d_o[1][15]
+  line_24      imd_val_d_o[1][11]
+  line_24      imd_val_d_o[0][24]
+  line_402     sext_result[31]
+  line_402     sext_result[10]
+  line_402     sext_result[9]
+  line_24      imd_val_d_o[1][20]
+  line_24      imd_val_d_o[1][28]
+  line_50      adder_op_a_shift3
+  line_402     sext_result[0]
+  line_49      adder_op_a_shift2
+  line_24      imd_val_d_o[0][5]
+  line_12      operator_i[6]
+  line_24      imd_val_d_o[1][4]
+  line_24      imd_val_d_o[0][8]
+  line_402     sext_result[25]
+  line_24      imd_val_d_o[1][1]
+  line_402     sext_result[11]
+  line_402     sext_result[20]
+  line_402     sext_result[30]
+  line_24      imd_val_d_o[1][26]
+  line_243     shift_ones
+  line_24      imd_val_d_o[1][18]
+  line_24      imd_val_d_o[0][9]
+  line_24      imd_val_d_o[0][25]
+  line_402     sext_result[16]
+  line_24      imd_val_d_o[0][17]
+  line_24      imd_val_d_o[0][16]
+  line_402     sext_result[13]
+  line_48      adder_op_a_shift1
+  line_245     shift_funnel
+  line_24      imd_val_d_o[1][12]
+  line_24      imd_val_d_o[0][18]
+  line_402     sext_result[22]
+  line_24      imd_val_d_o[1][27]
+  line_24      imd_val_d_o[1][6]
+  line_24      imd_val_d_o[0][4]
+  line_402     sext_result[27]
+  line_24      imd_val_d_o[1][10]
+  line_258     bfp_op
+  line_24      imd_val_d_o[1][14]
+  line_24      imd_val_d_o[0][26]
+  line_24      imd_val_d_o[0][28]
+  line_24      imd_val_d_o[1][22]
+  line_25      imd_val_we_o[1]
+  line_24      imd_val_d_o[1][24]
+  line_24      imd_val_d_o[1][17]
+  line_24      imd_val_d_o[0][7]
+  line_24      imd_val_d_o[0][27]
+  line_402     sext_result[4]
+  line_24      imd_val_d_o[0][20]
+  line_402     sext_result[14]
+  line_24      imd_val_d_o[1][21]
+  line_24      imd_val_d_o[1][23]
+  line_402     sext_result[19]
+  line_24      imd_val_d_o[1][30]
+  line_24      imd_val_d_o[0][11]
+  line_402     sext_result[12]
+  line_246     shift_sbmode
+  line_402     sext_result[17]
+  line_402     sext_result[1]
+  line_24      imd_val_d_o[1][5]
+  line_24      imd_val_d_o[0][6]
+  line_24      imd_val_d_o[0][19]
+  line_247     shift_amt[5]
+  line_24      imd_val_d_o[0][22]
+  line_402     sext_result[6]
+  line_24      imd_val_d_o[1][2]
+  line_24      imd_val_d_o[0][10]
+  line_402     sext_result[21]
+  line_402     sext_result[3]
+  line_24      imd_val_d_o[1][19]
+  line_24      imd_val_d_o[1][9]
+  line_24      imd_val_d_o[0][0]
+  line_24      imd_val_d_o[1][0]
+  line_24      imd_val_d_o[0][31]
+  line_24      imd_val_d_o[1][7]
+  line_402     sext_result[23]
+  line_402     sext_result[15]
+  line_24      imd_val_d_o[1][29]
+  line_402     sext_result[5]
+  line_24      imd_val_d_o[0][29]
+  line_24      imd_val_d_o[1][31]
+  line_24      imd_val_d_o[0][3]
+  line_24      imd_val_d_o[1][13]
+  line_24      imd_val_d_o[0][30]
+  line_402     sext_result[2]
+  line_24      imd_val_d_o[0][15]
+  line_402     sext_result[24]
+  line_402     sext_result[8]
+  line_24      imd_val_d_o[0][2]
+  line_25      imd_val_we_o[0]
 
 SUGGESTED PROGRAM:
-  li   t0, 0x80000001     # odd address
-  lb   t1, 0(t0)          # byte load → data_addr_o[0] = 1
-  sb   t1, 0(t0)          # byte store → data_addr_o[0] = 1
-  li   t0, 0x80000002     # 2-byte aligned
-  lh   t1, 0(t0)          # halfword → data_addr_o[1] = 1, [0] = 0
-  sh   t1, 0(t0)
-  li   t0, 0x80000003     # 3 = odd + 2
-  lb   t1, 0(t0)          # data_addr_o[1:0] = 11
-  # RVC for instr_addr_o[1]:
-  c.nop                   # compressed instruction at 2-byte boundary
+[{"op":"ADD","rd":5,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"SUB","rd":6,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"SLL","rd":7,"rs1":19,"rs2":22,"imm_bucket":0},
+ {"op":"SRL","rd":8,"rs1":21,"rs2":22,"imm_bucket":0},
+ {"op":"SRA","rd":9,"rs1":18,"rs2":22,"imm_bucket":0},
+ {"op":"XOR","rd":10,"rs1":16,"rs2":19,"imm_bucket":0},
+ {"op":"SLT","rd":11,"rs1":18,"rs2":17,"imm_bucket":0},
+ {"op":"SLTU","rd":12,"rs1":16,"rs2":17,"imm_bucket":0}]
 
 ======================================================================
-GROUP 7: ALU / decoder / controller signals (11 bins)
-======================================================================
+GROUP 7: ibex_if_stage (47 bins)
 
 EXPLANATION:
-  alu_operator[6] / alu_operator_o[6]: ALU op encoding bit 6. Toggled by
-    specific ALU operations that map to this bit (e.g., CPOP, CLZ from RV32B
-    — but RV32B=None so need to check which standard op uses bit 6).
-  bt_a_mux_sel[0]: branch target mux, selects between PC+imm or rs1+imm.
-    Toggled by JAL vs JALR.
-  stall_alu: asserted during multi-cycle ALU ops (MUL, DIV).
-  ctrl_fsm_ns[3]: controller FSM state bit 3, activated during exceptions.
-  exc_pc_mux_o[1] / pc_mux_o[2]: PC mux selects, activated by different
-    types of jumps/exceptions.
-  csr_illegal: asserted when accessing a non-existent or read-only CSR.
-  instr_type_wb[0]: instruction type in writeback (WritebackStage=0 so
-    this might be structural — include but may not toggle).
-  data_accessed[2]: tracer signal for different data access types.
+  1 NEEDS bins (known stimulus exists) + 46 REACHABLE? bins.
+  IF stage — instr_valid_id, pc_set signals. pc_set goes high on every branch/jump taken or exception. instr_rdata_id bits: the raw instruction word passing through IF. To exercise diverse instruction bits: use all instruction formats (R, I, S, B, U, J types) so the 32-bit instr word has all bit patterns. LUI sets bits [31:12], CSRRWI sets bits [19:15] (zimm).
 
 SIGNALS:
-  ibex_core                      instr_type_wb[0]
-  ibex_id_stage                  alu_operator[6]
-  ibex_id_stage                  bt_a_mux_sel[0]
-  ibex_id_stage                  exc_pc_mux_o[1]
-  ibex_id_stage                  pc_mux_o[2]
-  ibex_id_stage                  stall_alu
-  ibex_controller                ctrl_fsm_ns[3]
-  ibex_decoder                   alu_operator_o[6]
-  ibex_decoder                   bt_a_mux_sel_o[0]
-  ibex_decoder                   csr_illegal
-  ibex_tracer                    data_accessed[2]
+  line_107     csr_mepc_i[0]
+  line_75      instr_fetch_err_o
+  line_134     prefetch_addr[0]
+  line_156     exc_pc[5]
+  line_41      instr_addr_o[0]
+  line_111     csr_mtvec_i[4]
+  line_41      instr_addr_o[1]
+  line_175     unused_csr_mtvec[4]
+  line_140     fetch_addr[0]
+  line_111     csr_mtvec_i[7]
+  line_175     unused_csr_mtvec[7]
+  line_80      pc_if_o[0]
+  line_88      pc_mux_i[2]
+  line_156     exc_pc[6]
+  line_81      pc_id_o[0]
+  line_175     unused_csr_mtvec[3]
+  line_165     instr_err_out
+  line_175     unused_csr_mtvec[2]
+  line_150     if_instr_addr[0]
+  line_172     pc_mux_internal[2]
+  line_151     if_instr_bus_err
+  line_175     unused_csr_mtvec[6]
+  line_111     csr_mtvec_i[3]
+  line_76      instr_fetch_err_plus2_o
+  line_111     csr_mtvec_i[1]
+  line_125     instr_err
+  line_154     if_instr_err_plus2
+  line_45      instr_bus_err_i
+  line_93      exc_cause.lower_cause[4]
+  line_111     csr_mtvec_i[5]
+  line_77      illegal_c_insn_id_o
+  line_142     fetch_err_plus2
+  line_93      exc_cause.lower_cause[2]
+  line_73      instr_bp_taken_o
+  line_156     exc_pc[1]
+  line_175     unused_csr_mtvec[5]
+  line_156     exc_pc[4]
+  line_156     exc_pc[0]
+  line_111     csr_mtvec_i[6]
+  line_111     csr_mtvec_i[2]
+  line_156     exc_pc[7]
+  line_176     unused_exc_cause
+  line_141     fetch_err
+  line_156     exc_pc[2]
+  line_156     exc_pc[3]
+  line_92      exc_pc_mux_i[1]
+  line_153     if_instr_err
 
 SUGGESTED PROGRAM:
-  # MUL/DIV for stall_alu
-  li   t0, 12345
-  li   t1, 67890
-  mul  t2, t0, t1         # stall_alu toggles during MUL
-  div  t3, t0, t1         # stall_alu toggles during DIV
-  # JAL vs JALR for bt_a_mux_sel
-  jal  t0, 1f             # JAL: bt_a_mux_sel = PC-relative
-  1: jalr zero, t0, 0     # JALR: bt_a_mux_sel = rs1-relative
-  # csr_illegal: write to non-existent CSR
-  csrwi 0x7FF, 0          # CSR 0x7FF — illegal in current config
-  # Exception for ctrl_fsm_ns and exc_pc_mux
-  la   t0, trap2
-  csrw mtvec, t0
-  ecall                   # environment call exception
-  j    done2
-trap2:
-  mret
-done2:
+(see hint above)
 
 ======================================================================
-GROUP 8: Other (2 bins)
-======================================================================
+GROUP 8: ibex_controller (35 bins)
+
+EXPLANATION:
+  1 NEEDS bins (known stimulus exists) + 34 REACHABLE? bins.
+  Controller FSM — transitions: BOOT→DECODE on first instr, DECODE→FLUSH on branch taken, DECODE→WAIT_SLEEP on WFI, DECODE→IRQ_TAKEN on interrupt (but IRQs are tied off here). Exception path: DECODE→FLUSH, saves mepc/mcause. Use ECALL (mcause=11), EBREAK (mcause=3), illegal instr (mcause=2), misaligned load (mcause=4), WFI, then MRET to exercise all paths.
+
 SIGNALS:
-  ibex_id_stage                  debug_mode_entering_o
-  ibex_controller                debug_mode_d
+  line_99      csr_mtval_o[2]
+  line_159     mfip_id[2]
+  line_93      csr_save_if_o
+  line_144     do_single_step_q
+  line_139     exc_req_lsu
+  line_58      exc_cause_o.lower_cause[4]
+  line_164     dret_insn
+  line_116     ctrl_fsm_ns[3]
+  line_27      dret_insn_i
+  line_37      instr_bp_taken_i
+  line_148     ebreak_into_debug
+  line_122     store_err_d
+  line_116     ctrl_fsm_cs[3]
+  line_63      store_err_i
+  line_168     instr_fetch_err
+  line_58      exc_cause_o.lower_cause[2]
+  line_143     do_single_step_d
+  line_94      csr_save_id_o
+  line_159     mfip_id[0]
+  line_128     instr_fetch_err_prio
+  line_65      wb_exception_o
+  line_38      instr_fetch_err_i
+  line_132     store_err_prio
+  line_121     load_err_q
+  line_121     load_err_d
+  line_159     mfip_id[1]
+  line_159     mfip_id[3]
+  line_57      exc_pc_mux_o[1]
+  line_53      pc_mux_o[2]
+  line_122     store_err_q
+  line_71      branch_not_set_i
+  line_133     load_err_prio
+  line_150     handle_irq
+  line_39      instr_fetch_err_plus2_i
+  line_62      load_err_i
+
+SUGGESTED PROGRAM:
+[{"op":"ECALL","rd":0,"rs1":0,"rs2":0,"imm_bucket":0},
+ {"op":"EBREAK","rd":0,"rs1":0,"rs2":0,"imm_bucket":0},
+ {"op":"ADDI","rd":5,"rs1":0,"rs2":0,"imm_bucket":4},
+ {"op":"LW","rd":6,"rs1":5,"rs2":0,"imm_bucket":0},
+ {"op":"WFI","rd":0,"rs1":0,"rs2":0,"imm_bucket":0},
+ {"op":"MRET","rd":0,"rs1":0,"rs2":0,"imm_bucket":0}]
 
 ======================================================================
-SUMMARY
+GROUP 9: ibex_csr (28 bins)
+
+EXPLANATION:
+  CSR module — rd_data_o bits come from reading CSRs that have non-zero content. After an ECALL: mepc=PC (has bits 31,23+ set), mcause=11 (0xB=0b1011, sets bits 0,1,3). After EBREAK: mcause=3. After misaligned LW: mcause=4, mtval=bad_addr. Use CSRRS rd, mepc, x0 (rd!=x0) to read mepc into a register — this exercises csr_rdata bits. mcycle is always incrementing.
+
+SIGNALS:
+  line_21      rd_data_o[2]
+  line_19      wr_data_i[4]
+  line_21      rd_data_o[6]
+  line_19      wr_data_i[2]
+  line_26      rdata_q[1]
+  line_19      wr_data_i[7]
+  line_23      rd_error_o
+  line_26      rdata_q[3]
+  line_26      rdata_q[5]
+  line_21      rd_data_o[5]
+  line_26      rdata_q[7]
+  line_26      rdata_q[6]
+  line_21      rd_data_o[1]
+  line_26      rdata_q[4]
+  line_19      wr_data_i[6]
+  line_23      rd_error_o
+  line_21      rd_data_o[3]
+  line_21      rd_data_o[7]
+  line_23      rd_error_o
+  line_19      wr_data_i[5]
+  line_21      rd_data_o[4]
+  line_23      rd_error_o
+  line_23      rd_error_o
+  line_19      wr_data_i[3]
+  line_19      wr_data_i[1]
+  line_21      rd_data_o[5]
+  line_26      rdata_q[5]
+  line_26      rdata_q[2]
+
+SUGGESTED PROGRAM:
+(see hint above)
+
 ======================================================================
-  Total bins in this file: 121
-  All bins can be toggled with RISC-V assembly programs.
-  No testbench modification required.
+GROUP 10: ibex_prefetch_buffer (20 bins)
+
+EXPLANATION:
+  Prefetch — branch_mispredict and fill_buffer signals toggle on non-sequential PC changes. Every taken branch or JAL causes a prefetch flush. Use: BEQ/BNE with x0 (always not-taken or always taken), JAL to jump forward/backward. Mix taken and not-taken branches to exercise both paths.
+
+SIGNALS:
+  line_33      instr_addr_o[1]
+  line_48      branch_discard_q[1]
+  line_28      err_plus2_o
+  line_51      stored_addr_d[0]
+  line_33      instr_addr_o[0]
+  line_55      instr_addr_w_aligned[0]
+  line_26      addr_o[0]
+  line_58      fifo_addr[0]
+  line_27      err_o
+  line_55      instr_addr[0]
+  line_53      fetch_addr_d[0]
+  line_49      rdata_outstanding_rev[0]
+  line_53      fetch_addr_q[0]
+  line_48      branch_discard_s[1]
+  line_48      branch_discard_n[1]
+  line_51      stored_addr_q[0]
+  line_47      rdata_outstanding_q[1]
+  line_55      instr_addr_w_aligned[1]
+  line_35      instr_err_i
+  line_21      addr_i[0]
+
+SUGGESTED PROGRAM:
+(see hint above)
+
+======================================================================
+GROUP 11: ibex_counter (20 bins)
+
+EXPLANATION:
+  Counter — each counter_val_o[N] needs 2^N cycles to reach 1. Bits 0-9 are easily reached. Bits 10-19 need 1K-512K cycles (feasible with 256-instr programs run many times or NOPs). Bits 20+ need >1M cycles — practically unreachable. To maximize: fill the program with NOPs (ADDI x0,x0,0) and use mcountinhibit=0 (default) to keep counters running.
+
+SIGNALS:
+  line_16      counter_val_upd_o[8]
+  line_16      counter_val_upd_o[14]
+  line_16      counter_val_upd_o[12]
+  line_16      counter_val_upd_o[0]
+  line_16      counter_val_upd_o[7]
+  line_16      counter_val_upd_o[13]
+  line_16      counter_val_upd_o[4]
+  line_16      counter_val_upd_o[2]
+  line_16      counter_val_upd_o[15]
+  line_16      counter_val_upd_o[19]
+  line_16      counter_val_upd_o[1]
+  line_16      counter_val_upd_o[6]
+  line_16      counter_val_upd_o[3]
+  line_16      counter_val_upd_o[18]
+  line_16      counter_val_upd_o[9]
+  line_16      counter_val_upd_o[17]
+  line_16      counter_val_upd_o[10]
+  line_16      counter_val_upd_o[11]
+  line_16      counter_val_upd_o[5]
+  line_16      counter_val_upd_o[16]
+
+SUGGESTED PROGRAM:
+[{"op":"ADDI","rd":0,"rs1":0,"rs2":0,"imm_bucket":2},
+ {"op":"ADDI","rd":0,"rs1":0,"rs2":0,"imm_bucket":2},
+ {"op":"ADDI","rd":0,"rs1":0,"rs2":0,"imm_bucket":2}]
+# Repeat NOPs (ADDI x0,x0,0) to fill all 256 steps — counter bits increment each cycle
+
+======================================================================
+GROUP 12: ibex_fetch_fifo (15 bins)
+
+EXPLANATION:
+  Fetch FIFO — rdata_outstanding and split_misaligned_access toggle when fetch crosses a 32-bit boundary (odd halfword address). JAL to a 2-byte aligned but not 4-byte aligned address causes a split fetch. Use JAL imm_bucket=0 (+4 bytes) for sequential fetches, imm_bucket=1 (+8) to skip instructions.
+
+SIGNALS:
+  line_53      err_unaligned
+  line_45      err_q[1]
+  line_28      in_addr_i[0]
+  line_37      out_err_o
+  line_62      unused_addr_in
+  line_30      in_err_i
+  line_45      err_d[0]
+  line_45      err_q[2]
+  line_45      err_d[1]
+  line_45      err_d[2]
+  line_35      out_addr_o[0]
+  line_53      err
+  line_38      out_err_plus2_o
+  line_45      err_q[0]
+  line_53      err_plus2
+
+SUGGESTED PROGRAM:
+(see hint above)
+
+======================================================================
+GROUP 13: ibex_load_store_unit (10 bins)
+
+EXPLANATION:
+  LSU — addr_last[N] is the address of the last memory op. addr_last comes from the ALU result for load/store. x20=0x00010000 is the safe base; LW x1, 100(x20) → addr=0x10064 (exercises bits 6,2). LW x1, -2048(x20) → addr=0xF800 (exercises bits 15,11). For misaligned (triggers exception): LW x1, 1(x20). Use all imm_buckets {-2048,-100,0,100,2047} with x20.
+
+SIGNALS:
+  line_31      data_addr_o[1]
+  line_74      data_addr_w_aligned[1]
+  line_101     lsu_err_d
+  line_109     ls_fsm_cs[2]
+  line_64      store_err_o
+  line_74      data_addr_w_aligned[0]
+  line_101     lsu_err_q
+  line_28      data_bus_err_i
+  line_31      data_addr_o[0]
+  line_62      load_err_o
+
+SUGGESTED PROGRAM:
+[{"op":"LW","rd":5,"rs1":20,"rs2":0,"imm_bucket":4},
+ {"op":"LW","rd":6,"rs1":20,"rs2":0,"imm_bucket":0},
+ {"op":"LW","rd":7,"rs1":20,"rs2":0,"imm_bucket":1},
+ {"op":"SW","rd":0,"rs1":20,"rs2":22,"imm_bucket":3},
+ {"op":"LH","rd":8,"rs1":20,"rs2":0,"imm_bucket":2},
+ {"op":"LB","rd":9,"rs1":20,"rs2":0,"imm_bucket":1}]
+
+======================================================================
+GROUP 14: ibex_multdiv_fast (9 bins)
+
+EXPLANATION:
+  Multiplier — op_numerator (dividend) and op_denominator (divisor) are latched at start of MUL/DIV. multdiv_result[N] is the output. Use ALL 8 variants: MUL MULH MULHSU MULHU DIV DIVU REM REMU. Best operand pairs for bit coverage: (x17=0x7FFFFFFF, x18=0x80000000), (x22=0x12345678, x23=0xFEDCBA98), (x16=0xFFFFFFFF, x19=0x55555555), (x1=1, x16=-1 for edge cases).
+
+SIGNALS:
+  line_81      div_hold
+  line_127     unused_imd_val[0]
+  line_39      imd_val_d_o[1][33]
+  line_73      op_quotient_d[0]
+  line_127     unused_imd_val[1]
+  line_75      next_quotient[32]
+  line_39      imd_val_d_o[1][32]
+  line_80      mult_hold
+  line_70      op_quotient_q[0]
+
+SUGGESTED PROGRAM:
+[{"op":"MUL","rd":5,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"MULH","rd":6,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"MULHSU","rd":7,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"MULHU","rd":8,"rs1":17,"rs2":18,"imm_bucket":0},
+ {"op":"DIV","rd":9,"rs1":22,"rs2":1,"imm_bucket":0},
+ {"op":"DIVU","rd":10,"rs1":23,"rs2":1,"imm_bucket":0},
+ {"op":"REM","rd":11,"rs1":16,"rs2":22,"imm_bucket":0},
+ {"op":"REMU","rd":12,"rs1":19,"rs2":21,"imm_bucket":0}]
+
+======================================================================
+GROUP 15: ibex_top (8 bins)
+
+EXPLANATION:
+  Signals in ibex_top — use diverse instruction sequences.
+
+SIGNALS:
+  line_56      instr_addr_o[0]
+  line_59      instr_err_i
+  line_67      data_addr_o[0]
+  line_89      crash_dump_o.next_pc[0]
+  line_46      test_en_i
+  line_67      data_addr_o[1]
+  line_56      instr_addr_o[1]
+  line_72      data_err_i
+
+SUGGESTED PROGRAM:
+(see hint above)
+
+======================================================================
+GROUP 16: ibex_top_tracing (8 bins)
+
+EXPLANATION:
+  Signals in ibex_top_tracing — use diverse instruction sequences.
+
+SIGNALS:
+  line_60      data_addr_o[0]
+  line_82      crash_dump_o.next_pc[0]
+  line_65      data_err_i
+  line_60      data_addr_o[1]
+  line_49      instr_addr_o[0]
+  line_49      instr_addr_o[1]
+  line_37      test_en_i
+  line_52      instr_err_i
+
+SUGGESTED PROGRAM:
+(see hint above)
+
+======================================================================
+GROUP 17: cocotb_ibex (4 bins)
+
+EXPLANATION:
+  Signals in cocotb_ibex — use diverse instruction sequences.
+
+SIGNALS:
+  line_22      data_addr_o[0]
+  line_22      data_addr_o[1]
+  line_13      instr_addr_o[0]
+  line_13      instr_addr_o[1]
+
+SUGGESTED PROGRAM:
+(see hint above)
+
+======================================================================
+GROUP 18: ibex_register_file_ff (3 bins)
+
+EXPLANATION:
+  Signals in ibex_register_file_ff — use diverse instruction sequences.
+
+SIGNALS:
+  line_24      test_en_i
+  line_137     unused_test_en
+  line_43      err_o
+
+SUGGESTED PROGRAM:
+(see hint above)
+
+======================================================================
+GROUP 19: prim_clock_gating (1 bins)
+
+EXPLANATION:
+  Signals in prim_clock_gating — use diverse instruction sequences.
+
+SIGNALS:
+  line_27      test_en_i
+
+SUGGESTED PROGRAM:
+(see hint above)
+
+======================================================================
+GROUP 20: ibex_tracer (1 bins)
+
+EXPLANATION:
+  Signals in ibex_tracer — use diverse instruction sequences.
+
+SIGNALS:
+  line_97      data_accessed[2]
+
+SUGGESTED PROGRAM:
+(see hint above)
