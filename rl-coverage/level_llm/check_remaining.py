@@ -37,7 +37,11 @@ def classify(k):
                                'butterfly_result', 'invbutterfly_result',
                                'clmul_result', 'multicycle_result',
                                'irq_nm', 'irq_pending', 'dummy_instr',
-                               'double_fault']):
+                               'double_fault',
+                               'depc_q', 'csr_depc', 'depc_d',
+                               'mcountin',
+                               'tselect_rdata', 'tselect_q', 'tinfo_rdata',
+                               'tcontrol', 'tmatch_control', 'tmatch_value']):
         return 'hw_disabled'
     # RISC-V architectural: PC/address bits 0,1 always 0
     if re.search(r'(instr_addr|pc_if|pc_id|pc_wb|exception_pc|mepc|boot_addr)\[0\]', sig):
