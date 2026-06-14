@@ -126,7 +126,7 @@ SYSTEM_PROMPT = (
 )
 
 OUTPUT_FORMAT = (
-    'Respond with ONLY a JSON array of action objects, 5-40 instructions long, '
+    'Respond with ONLY a JSON array of action objects, 80-200 instructions long, '
     'e.g.:\n'
     '[{"op": "LUI", "rd": 5, "rs1": 0, "rs2": 0, "imm_bucket": 3},\n'
     ' {"op": "CSRRW", "rd": 0, "rs1": 5, "rs2": 0, "imm_bucket": 1}]\n'
