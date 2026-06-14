@@ -27,7 +27,12 @@ def classify(k):
                                'ic_data_', 'ic_tag_', 'scramble_key', 'scramble_nonce',
                                'dscratch', 'dscratc', 'counter_val_upd',
                                'ic_hit', 'ic_valid', 'ic_inval',
-                               'ecc_err', 'bus_intg', 'intg_err']):
+                               'ecc_err', 'bus_intg', 'intg_err',
+                               'bfp_mask', 'bfp_result', 'pack_result', 'sext_result',
+                               'minmax_result', 'bfp_rev', 'bfp_mask_rev',
+                               'nt_branc', 'predict_branc', 'cnt_branc',
+                               'nt_branch', 'predict_branch', 'cnt_branch',
+                               'boot_addr']):
         return 'hw_disabled'
     # RISC-V architectural: PC/address bits 0,1 always 0
     if re.search(r'(instr_addr|pc_if|pc_id|pc_wb|exception_pc|mepc|boot_addr)\[0\]', sig):
