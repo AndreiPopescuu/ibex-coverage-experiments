@@ -23,7 +23,11 @@ def classify(k):
                                'shadow', 'data_ind', 'mhpm', 'cpuctrl',
                                'debug_ebreak', 'debug_single', 'debug_cause',
                                'debug_csr', 'dret', 'mstatus_err', 'mtvec_err',
-                               'pc_mismatch', 'alert', 'crash_dump']):
+                               'pc_mismatch', 'alert', 'crash_dump',
+                               'ic_data_', 'ic_tag_', 'scramble_key', 'scramble_nonce',
+                               'dscratch', 'dscratc', 'counter_val_upd',
+                               'ic_hit', 'ic_valid', 'ic_inval',
+                               'ecc_err', 'bus_intg', 'intg_err']):
         return 'hw_disabled'
     # RISC-V architectural: PC/address bits 0,1 always 0
     if re.search(r'(instr_addr|pc_if|pc_id|pc_wb|exception_pc|mepc|boot_addr)\[0\]', sig):
