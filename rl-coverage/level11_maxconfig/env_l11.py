@@ -14,7 +14,7 @@ replaying the existing L9/L10 corpus as a coverage baseline on the new
 build, then for RL/LLM exploration of whatever remains reachable.
 """
 
-import os, sys, re, json, subprocess
+import os, sys, re, json, subprocess, sysconfig
 from collections import Counter, deque
 from pathlib import Path
 
@@ -78,13 +78,14 @@ def run_program(actions):
         json.dump({"n": len(machine), "agent": "l11",
                    "machine_code": [int(m) for m in machine]}, f)
     env = os.environ.copy()
-    cocotb_libs = "/home/andrei/ibex_env/lib/python3.12/site-packages/cocotb/libs"
+    site_packages = sysconfig.get_paths()["purelib"]
+    cocotb_libs = os.path.join(site_packages, "cocotb", "libs")
     env["LD_LIBRARY_PATH"] = (
         cocotb_libs + ":/usr/lib/x86_64-linux-gnu"
         + ":" + env.get("LD_LIBRARY_PATH", "")
     )
     env["PYTHONPATH"] = (
-        str(ML4DV) + ":/home/andrei/ibex_env/lib/python3.12/site-packages"
+        str(ML4DV) + ":" + site_packages
         + ":" + env.get("PYTHONPATH", "")
     )
     env["MODULE"]     = "test_run_for_l8"

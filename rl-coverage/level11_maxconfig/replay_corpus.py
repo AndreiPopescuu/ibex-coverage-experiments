@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 THIS   = Path(__file__).resolve().parent
@@ -48,13 +49,14 @@ def run_words(words: list[int]):
                    "machine_code": [int(w) for w in words]}, f)
 
     env = os.environ.copy()
-    cocotb_libs = "/home/andrei/ibex_env/lib/python3.12/site-packages/cocotb/libs"
+    site_packages = sysconfig.get_paths()["purelib"]
+    cocotb_libs = os.path.join(site_packages, "cocotb", "libs")
     env["LD_LIBRARY_PATH"] = (
         cocotb_libs + ":/usr/lib/x86_64-linux-gnu"
         + ":" + env.get("LD_LIBRARY_PATH", "")
     )
     env["PYTHONPATH"] = (
-        str(ML4DV) + ":/home/andrei/ibex_env/lib/python3.12/site-packages"
+        str(ML4DV) + ":" + site_packages
         + ":" + env.get("PYTHONPATH", "")
     )
     env["MODULE"]     = "test_run_for_l8"
