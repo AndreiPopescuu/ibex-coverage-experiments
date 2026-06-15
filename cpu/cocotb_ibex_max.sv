@@ -46,6 +46,26 @@ module cocotb_ibex(
   parameter bit                 ICacheECC                = 1'b1;
   parameter bit                 BranchPredictor          = 1'b1;
 
+  // SecureIbex=1 -> MemECC=1 inside ibex_top: the core checks instr_rdata_intg_i /
+  // data_rdata_intg_i against instr_rdata_i / data_rdata_i using the inverted
+  // SECDED(39,32) code (prim_secded_inv_39_32_dec). The cocotb MemAgent only
+  // drives the 32 data bits, so we compute the matching ECC bits here from
+  // whatever data it returns — otherwise every fetch/load after the first is
+  // flagged as a memory-integrity error (alert_major_bus_o / instr_intg_err)
+  // and the core traps to mtvec_base forever after instruction 1.
+  logic [38:0] instr_rdata_ecc;
+  logic [38:0] data_rdata_ecc;
+
+  prim_secded_inv_39_32_enc u_instr_rdata_ecc_enc (
+    .data_i (instr_rdata_i),
+    .data_o (instr_rdata_ecc)
+  );
+
+  prim_secded_inv_39_32_enc u_data_rdata_ecc_enc (
+    .data_i (data_rdata_i),
+    .data_o (data_rdata_ecc)
+  );
+
   ibex_top_tracing #(
       .SecureIbex      ( SecureIbex       ),
       .ICacheScramble  ( ICacheScramble   ),
@@ -83,7 +103,7 @@ module cocotb_ibex(
     .instr_rvalid_i,
     .instr_addr_o,
     .instr_rdata_i,
-    .instr_rdata_intg_i     ('0),
+    .instr_rdata_intg_i     (instr_rdata_ecc[38:32]),
     .instr_err_i            (1'b0),
 
     .data_req_o,
@@ -95,7 +115,7 @@ module cocotb_ibex(
     .data_wdata_o,
     .data_wdata_intg_o      (),
     .data_rdata_i,
-    .data_rdata_intg_i      ('0),
+    .data_rdata_intg_i      (data_rdata_ecc[38:32]),
     .data_err_i             (1'b0),
 
     .irq_software_i         (1'b0),
