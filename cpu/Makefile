@@ -16,9 +16,14 @@ CONFIG ?= minimal
 ifeq ($(CONFIG),max)
 COCOTB_TOP_SV := cocotb_ibex_max.sv
 SIM_BUILD     := sim_build_max
+# Max config is ~1.7x bigger (lockstep, ICache+scramble, PMP, RV32B) and
+# FST waveform dumping on every cycle dominates runtime. We only need
+# coverage.dat here, not waveforms, so skip tracing for max builds.
+TRACE_ARGS    :=
 else
 COCOTB_TOP_SV := cocotb_ibex.sv
 SIM_BUILD     := sim_build
+TRACE_ARGS    := --trace-fst --trace-structs
 endif
 
 VERILOG_SOURCES += $(PWD)/src/lowrisc_lint_common_0.1/tools/verilator/common.vlt \
@@ -160,8 +165,7 @@ EXTRA_ARGS +=  \
 	-CFLAGS -I$(PWD)/src/lowrisc_ibex_ibex_core_0.1/rtl \
   -DSYNTHESIS=1 \
   -DRVFI=1 \
-	--trace-fst \
-  --trace-structs \
+	$(TRACE_ARGS) \
   --coverage \
 	-Wno-fatal \
   -CFLAGS "-std=c++14 -Wall -O3"
