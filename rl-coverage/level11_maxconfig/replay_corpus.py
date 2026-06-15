@@ -19,6 +19,7 @@ import json
 import os
 import pickle
 import re
+import signal
 import subprocess
 import sys
 import sysconfig
@@ -73,6 +74,16 @@ def run_words(words: list[int]):
     return cov_parser.parse(str(COVDAT))
 
 
+_stop_requested = False
+
+def _sigint_handler(sig, frame):
+    global _stop_requested
+    print("\n[!] Stop cerut — salvez ce am acumulat până acum...", flush=True)
+    _stop_requested = True
+
+signal.signal(signal.SIGINT, _sigint_handler)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", required=True,
@@ -81,6 +92,9 @@ def main():
     ap.add_argument("--save-hits", default="l11_baseline_hits.pkl",
                     help="Where to save the cumulative hit set (pickle), "
                          "for use as --hits in train_l11_ppo.py")
+    ap.add_argument("--max-programs", type=int, default=None,
+                    help="Rulează doar primele N programe din corpus, apoi "
+                         "se oprește (util pentru un baseline rapid)")
     args = ap.parse_args()
 
     if not VTOP.exists():
@@ -102,6 +116,10 @@ def main():
     failed   = 0
 
     for i, prog in enumerate(programs):
+        if args.max_programs and i >= args.max_programs:
+            print(f"\n[!] --max-programs {args.max_programs} atins, mă opresc.")
+            break
+
         summary = run_words(prog["words"])
 
         if summary is None:
@@ -117,6 +135,9 @@ def main():
         cum_pct = 100.0 * len(cum_hits) / TOTAL if TOTAL else 0.0
         print(f"  [{i+1:>3}/{total_prg}] ep={prog['ep']:>4}: "
               f"+{len(new_hits):>4} bins  |  cum {cum_pct:.2f}%")
+
+        if _stop_requested:
+            break
 
     final_pct = 100.0 * len(cum_hits) / TOTAL if TOTAL else 0.0
     print(f"\n{'='*50}")
