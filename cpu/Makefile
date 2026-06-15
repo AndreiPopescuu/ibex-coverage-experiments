@@ -7,6 +7,20 @@
 SIM ?= verilator
 TOPLEVEL_LANG ?= verilog
 
+# CONFIG=minimal (default): cocotb_ibex.sv, all-optional-features-off Ibex,
+#                            output in sim_build/.
+# CONFIG=max:                cocotb_ibex_max.sv, all-optional-features-on Ibex
+#                            (PMP, ICache, RV32B, lockstep, ...), output in
+#                            sim_build_max/ — does not touch the minimal build.
+CONFIG ?= minimal
+ifeq ($(CONFIG),max)
+COCOTB_TOP_SV := cocotb_ibex_max.sv
+SIM_BUILD     := sim_build_max
+else
+COCOTB_TOP_SV := cocotb_ibex.sv
+SIM_BUILD     := sim_build
+endif
+
 VERILOG_SOURCES += $(PWD)/src/lowrisc_lint_common_0.1/tools/verilator/common.vlt \
 	$(PWD)/src/lowrisc_prim_assert_0.1/lint/prim_assert.vlt \
 	$(PWD)/src/lowrisc_prim_generic_clock_gating_0/lint/prim_generic_clock_gating.vlt \
@@ -112,7 +126,7 @@ VERILOG_SOURCES += $(PWD)/src/lowrisc_lint_common_0.1/tools/verilator/common.vlt
 	$(PWD)/src/lowrisc_ibex_ibex_top_0.1/rtl/ibex_lockstep.sv \
 	$(PWD)/src/lowrisc_ibex_ibex_top_0.1/rtl/ibex_top.sv \
   $(PWD)/src/lowrisc_ibex_ibex_top_tracing_0.1/rtl/ibex_top_tracing.sv \
-	$(PWD)/cocotb_ibex.sv
+	$(PWD)/$(COCOTB_TOP_SV)
 # use VHDL_SOURCES for VHDL files
 
 # TOPLEVEL is the name of the toplevel module in your Verilog or VHDL file
