@@ -64,11 +64,14 @@ def run_words(words: list[int]):
     env["MODULE"]     = "test_run_for_l8"
     env["RL_L8_JSON"] = PROGRAM_JSON
 
-    proc = subprocess.run(
-        [str(VTOP), f"+verilator+coverage+file+{COVDAT}"],
-        cwd=str(ML4DV), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180,
-    )
+    try:
+        proc = subprocess.run(
+            [str(VTOP), f"+verilator+coverage+file+{COVDAT}"],
+            cwd=str(ML4DV), env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     if proc.returncode != 0:
         return None
     return cov_parser.parse(str(COVDAT))
@@ -95,6 +98,9 @@ def main():
     ap.add_argument("--max-programs", type=int, default=None,
                     help="Rulează doar primele N programe din corpus, apoi "
                          "se oprește (util pentru un baseline rapid)")
+    ap.add_argument("--start", type=int, default=0,
+                    help="Sări peste primele N programe (util pentru resume "
+                         "după un crash/timeout)")
     args = ap.parse_args()
 
     if not VTOP.exists():
@@ -115,40 +121,55 @@ def main():
     cum_hits = set()
     failed   = 0
 
-    for i, prog in enumerate(programs):
-        if args.max_programs and i >= args.max_programs:
-            print(f"\n[!] --max-programs {args.max_programs} atins, mă opresc.")
-            break
-
-        summary = run_words(prog["words"])
-
-        if summary is None:
-            print(f"  [{i+1:>3}/{total_prg}] ep={prog['ep']:>4}: Vtop FAILED")
-            failed += 1
-            continue
-
-        ep_hits  = {norm(k) for k, v in summary.points.items()
-                    if v > 0 and "\x01page\x02v_toggle/" in ("\x01" + k)}
-        new_hits = ep_hits - cum_hits
-        cum_hits |= ep_hits
-
+    save_path = Path(args.save_hits)
+    if save_path.exists():
+        with open(save_path, "rb") as f:
+            cum_hits = pickle.load(f)
         cum_pct = 100.0 * len(cum_hits) / TOTAL if TOTAL else 0.0
-        print(f"  [{i+1:>3}/{total_prg}] ep={prog['ep']:>4}: "
-              f"+{len(new_hits):>4} bins  |  cum {cum_pct:.2f}%")
+        print(f"[i] Resume din {save_path}: {len(cum_hits):,} hits ({cum_pct:.2f}%)\n")
 
-        if _stop_requested:
-            break
+    def _save():
+        with open(save_path, "wb") as f:
+            pickle.dump(cum_hits, f)
 
-    final_pct = 100.0 * len(cum_hits) / TOTAL if TOTAL else 0.0
-    print(f"\n{'='*50}")
-    print(f"Coverage replay pe config maxima: {final_pct:.2f}%  ({len(cum_hits):,} / {TOTAL:,} bins)")
-    print(f"Coverage acelasi corpus pe minimal: {corpus['final_cum_pct']}%")
-    print(f"Programe esuate: {failed} / {total_prg}")
+    try:
+        for i, prog in enumerate(programs):
+            if i < args.start:
+                continue
+            if args.max_programs and (i - args.start) >= args.max_programs:
+                print(f"\n[!] --max-programs {args.max_programs} atins, mă opresc.")
+                break
 
-    with open(args.save_hits, "wb") as f:
-        pickle.dump(cum_hits, f)
-    print(f"\nSaved {len(cum_hits):,} hits -> {args.save_hits} "
-          f"(use as --hits in train_l11_ppo.py)")
+            summary = run_words(prog["words"])
+
+            if summary is None:
+                print(f"  [{i+1:>3}/{total_prg}] ep={prog['ep']:>4}: Vtop FAILED")
+                failed += 1
+                continue
+
+            ep_hits  = {norm(k) for k, v in summary.points.items()
+                        if v > 0 and "\x01page\x02v_toggle/" in ("\x01" + k)}
+            new_hits = ep_hits - cum_hits
+            cum_hits |= ep_hits
+
+            cum_pct = 100.0 * len(cum_hits) / TOTAL if TOTAL else 0.0
+            print(f"  [{i+1:>3}/{total_prg}] ep={prog['ep']:>4}: "
+                  f"+{len(new_hits):>4} bins  |  cum {cum_pct:.2f}%")
+
+            _save()
+
+            if _stop_requested:
+                break
+    finally:
+        final_pct = 100.0 * len(cum_hits) / TOTAL if TOTAL else 0.0
+        print(f"\n{'='*50}")
+        print(f"Coverage replay pe config maxima: {final_pct:.2f}%  ({len(cum_hits):,} / {TOTAL:,} bins)")
+        print(f"Coverage acelasi corpus pe minimal: {corpus['final_cum_pct']}%")
+        print(f"Programe esuate: {failed} / {total_prg}")
+
+        _save()
+        print(f"\nSaved {len(cum_hits):,} hits -> {save_path} "
+              f"(use as --hits in train_l11_ppo.py)")
 
 
 if __name__ == "__main__":

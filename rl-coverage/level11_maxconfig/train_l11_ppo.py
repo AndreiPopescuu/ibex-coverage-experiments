@@ -37,7 +37,7 @@ CKPT_HISTORY = THIS / "l11_checkpoint_history.npz"
 # Total bins toggle pe build-ul max (masurat o data via replay_corpus.py).
 # Folosit doar pentru afisarea baseline-ului inainte de primul episod;
 # self._total_tog din env se actualizeaza la valoarea reala dupa primul episod.
-TOTAL_MAX = 33546
+TOTAL_MAX = 33624
 
 # ── Ctrl+C handler ────────────────────────────────────────────────────────────
 _stop_requested = False
