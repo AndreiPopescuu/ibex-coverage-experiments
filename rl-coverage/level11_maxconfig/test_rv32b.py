@@ -59,11 +59,25 @@ def run_words(words):
     env["MODULE"]     = "test_run_for_l8"
     env["RL_L8_JSON"] = PROGRAM_JSON
 
+    if COVDAT.exists():
+        COVDAT.unlink()
+
     proc = subprocess.run(
         [str(VTOP), f"+verilator+coverage+file+{COVDAT}"],
         cwd=str(ML4DV), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180,
+        capture_output=True, text=True, timeout=180,
     )
+    print(f"--- Vtop returncode: {proc.returncode} ---")
+    tail = "\n".join(proc.stdout.splitlines()[-15:])
+    print("--- stdout (last 15 lines) ---")
+    print(tail)
+    if proc.stderr.strip():
+        print("--- stderr ---")
+        print("\n".join(proc.stderr.splitlines()[-15:]))
+
+    if not COVDAT.exists():
+        print(f"[!] {COVDAT} nu a fost creat de aceasta rulare!")
+        return None
     if proc.returncode != 0:
         return None
     return cov_parser.parse(str(COVDAT))
