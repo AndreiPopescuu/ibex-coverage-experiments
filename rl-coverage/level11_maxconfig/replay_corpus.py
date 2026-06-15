@@ -17,6 +17,7 @@ Usage:
 import argparse
 import json
 import os
+import pickle
 import re
 import subprocess
 import sys
@@ -77,6 +78,9 @@ def main():
     ap.add_argument("--corpus", required=True,
                     help="Corpus JSON recorded on the minimal build "
                          "(e.g. ../level9_ops/corpus_all.json)")
+    ap.add_argument("--save-hits", default="l11_baseline_hits.pkl",
+                    help="Where to save the cumulative hit set (pickle), "
+                         "for use as --hits in train_l11_ppo.py")
     args = ap.parse_args()
 
     if not VTOP.exists():
@@ -119,6 +123,11 @@ def main():
     print(f"Coverage replay pe config maxima: {final_pct:.2f}%  ({len(cum_hits):,} / {TOTAL:,} bins)")
     print(f"Coverage acelasi corpus pe minimal: {corpus['final_cum_pct']}%")
     print(f"Programe esuate: {failed} / {total_prg}")
+
+    with open(args.save_hits, "wb") as f:
+        pickle.dump(cum_hits, f)
+    print(f"\nSaved {len(cum_hits):,} hits -> {args.save_hits} "
+          f"(use as --hits in train_l11_ppo.py)")
 
 
 if __name__ == "__main__":
