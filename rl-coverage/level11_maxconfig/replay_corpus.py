@@ -45,7 +45,7 @@ def norm(key):
     return k
 
 
-def run_words(words: list[int]):
+def run_words(words: list[int], timeout: int = 300):
     with open(PROGRAM_JSON, "w") as f:
         json.dump({"n": len(words), "agent": "l11_replay",
                    "machine_code": [int(w) for w in words]}, f)
@@ -68,7 +68,7 @@ def run_words(words: list[int]):
         proc = subprocess.run(
             [str(VTOP), f"+verilator+coverage+file+{COVDAT}"],
             cwd=str(ML4DV), env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return None
@@ -101,6 +101,8 @@ def main():
     ap.add_argument("--start", type=int, default=0,
                     help="Sări peste primele N programe (util pentru resume "
                          "după un crash/timeout)")
+    ap.add_argument("--timeout", type=int, default=300,
+                    help="Timeout per program in secunde (default 300)")
     args = ap.parse_args()
 
     if not VTOP.exists():
@@ -113,7 +115,7 @@ def main():
     programs  = corpus["programs"]
     total_prg = len(programs)
 
-    s = run_words([0x00000013] * 8)
+    s = run_words([0x00000013] * 8, timeout=args.timeout)
     TOTAL = s.by_kind["toggle"][1] if s else 0
     print(f"Total bins toggle (max config): {TOTAL}")
     print(f"Corpus: {total_prg} programe | coverage pe minimal: {corpus['final_cum_pct']}%\n")
@@ -140,7 +142,7 @@ def main():
                 print(f"\n[!] --max-programs {args.max_programs} atins, mă opresc.")
                 break
 
-            summary = run_words(prog["words"])
+            summary = run_words(prog["words"], timeout=args.timeout)
 
             if summary is None:
                 print(f"  [{i+1:>3}/{total_prg}] ep={prog['ep']:>4}: Vtop FAILED")
