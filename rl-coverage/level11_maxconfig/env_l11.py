@@ -1,17 +1,12 @@
-"""env_l11.py — same env/codec as L10 (87 ops), run against the "max"
-Ibex build (cocotb_ibex_max.sv: PMP, ICache, RV32B, lockstep, ... all on).
+"""env_l11.py — env for the "max" Ibex build (cocotb_ibex_max.sv: PMP,
+ICache, RV32B, lockstep, ... all on), using codec_l11 (116 ops:
+L10's 87 RV32IMC ops + 29 RV32B ops from Zba/Zbb/Zbs).
 
 Build the matching Vtop once with:
     cd cpu && make CONFIG=max
 
 This does NOT touch cpu/sim_build/ or cpu/coverage.dat (the minimal-config
 build) — output goes to cpu/sim_build_max/ and cpu/coverage_max.dat.
-
-The action/codec space (codec_l10.N_OPS = 87) is still RV32IMC-only, so a
-large chunk of the *new* bins unlocked by the max config (RV32B especially)
-are out of reach until the codec is extended. This env is meant first for
-replaying the existing L9/L10 corpus as a coverage baseline on the new
-build, then for RL/LLM exploration of whatever remains reachable.
 """
 
 import os, sys, re, json, subprocess, sysconfig
@@ -34,7 +29,7 @@ sys.path.insert(0, str(L5))
 sys.path.insert(0, str(L10))
 import cov_parser
 
-from codec_l10 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, emit_program
+from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, emit_program
 
 MODULES = [
     "ibex_core", "ibex_cs_registers", "ibex_top", "ibex_if_stage",

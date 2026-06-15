@@ -1,5 +1,5 @@
 """train_l11_ppo.py — PPO pe configuratia "max" (lockstep, ICache, PMP, RV32B
-gated on), folosind acelasi codec ca L10 (87 ops, RV32IMC).
+gated on), folosind codec_l11 (116 ops: L10 RV32IMC + 29 RV32B Zba/Zbb/Zbs).
 
 Build-ul max trebuie compilat o data, fara tracing:
     cd cpu && make CONFIG=max sim_build_max/Vtop
@@ -21,6 +21,7 @@ sys.path.insert(0, str(THIS.parent / "level5_real_rtl"))
 sys.path.insert(0, str(THIS.parent / "level10_ops"))
 
 from env_l11 import IbexL11Env, MODULES, N_OBS
+from codec_l11 import N_OPS, N_CSR_BUCKETS
 
 try:
     from stable_baselines3 import PPO
@@ -159,8 +160,8 @@ def main():
 
     print("=" * 70)
     print(f"L11 PPO — config maxima (lockstep/ICache/PMP/RV32B on), "
-          f"codec 87 ops, obs {N_OBS} dims, {args.steps} pași/ep")
-    print(f"  Action space: [87 ops, 32 rd, 32 rs1, 32 rs2, 5 imm, 33 csr_bucket]")
+          f"codec {N_OPS} ops, obs {N_OBS} dims, {args.steps} pași/ep")
+    print(f"  Action space: [{N_OPS} ops, 32 rd, 32 rs1, 32 rs2, 5 imm, {N_CSR_BUCKETS} csr_bucket]")
     print(f"  Reward: episode_base + toggle_shaped + 0.3× branch")
     print("=" * 70)
 
