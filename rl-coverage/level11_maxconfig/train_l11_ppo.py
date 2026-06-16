@@ -29,6 +29,12 @@ try:
 except ImportError:
     print("[ERROR] pip install stable-baselines3"); sys.exit(1)
 
+try:
+    from sb3_contrib import RecurrentPPO
+    _RECURRENT_AVAILABLE = True
+except ImportError:
+    _RECURRENT_AVAILABLE = False
+
 # ── Checkpoint paths ──────────────────────────────────────────────────────────
 CKPT_MODEL   = THIS / "l11_checkpoint_model"
 CKPT_HITS    = THIS / "l11_checkpoint_hits.pkl"
@@ -155,6 +161,9 @@ def main():
     ap.add_argument("--checkpoint-every", type=int, default=100)
     ap.add_argument("--ent-coef", type=float, default=None,
                     help="Suprascrie ent_coef (ex: 0.15 pentru mai multă explorare)")
+    ap.add_argument("--recurrent", action="store_true",
+                    help="Folosește RecurrentPPO (LSTM) din sb3-contrib în loc de PPO (MLP). "
+                         "Permite coordonarea secvențelor multi-pas (ex: PMP setup → access).")
     ap.add_argument("--pretrained-model", default=None,
                     help="Încarcă weights dintr-un model existent dar resetează hits (fresh coverage)")
     ap.add_argument("--corpus-out", default="corpus_l11.json",
@@ -205,7 +214,14 @@ def main():
     print(f"  Pași/episod:     {args.steps}")
     print(f"  Obs dims:        {N_OBS}")
     ent_coef = args.ent_coef if args.ent_coef is not None else 0.08
-    print(f"  Net arch:        [512, 256]  ent_coef={ent_coef}")
+    use_recurrent = args.recurrent and _RECURRENT_AVAILABLE
+    if args.recurrent and not _RECURRENT_AVAILABLE:
+        print("  [!] sb3-contrib nu e instalat — fallback la PPO (MLP). "
+              "Instalează cu: pip install sb3-contrib")
+    algo_name = "RecurrentPPO (LSTM)" if use_recurrent else "PPO (MLP)"
+    net_desc  = "LSTM-256 + [256,256]" if use_recurrent else "[512, 256]"
+    print(f"  Algoritm:        {algo_name}")
+    print(f"  Net arch:        {net_desc}  ent_coef={ent_coef}")
     print(f"  Baseline:        {baseline_pct:.2f}%  (din {len(initial_hits):,} / ~{TOTAL_MAX:,} bins)")
     print(f"  Checkpoint:      la fiecare {args.checkpoint_every} ep → {CKPT_MODEL}.zip")
     print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'tog+':>5} {'br+':>4} | {'Δbaseline':>10} | worst module")
@@ -220,9 +236,11 @@ def main():
 
     model = None
 
+    AlgoCls = RecurrentPPO if use_recurrent else PPO
+
     if args.resume and CKPT_MODEL.with_suffix(".zip").exists():
         try:
-            model = PPO.load(str(CKPT_MODEL), env=env, device="cpu")
+            model = AlgoCls.load(str(CKPT_MODEL), env=env, device="cpu")
             if args.ent_coef is not None:
                 model.ent_coef = args.ent_coef
             print(f"  Model încărcat din {CKPT_MODEL}.zip")
@@ -235,7 +253,7 @@ def main():
             src = src.with_suffix(".zip")
         if src.exists():
             try:
-                model = PPO.load(str(src.with_suffix("")), env=env, device="cpu")
+                model = AlgoCls.load(str(src.with_suffix("")), env=env, device="cpu")
                 if args.ent_coef is not None:
                     model.ent_coef = args.ent_coef
                 print(f"  Weights încărcate din {src} — hits resetate (fresh coverage)")
@@ -246,17 +264,34 @@ def main():
             print(f"  [!] {src} nu există — model nou")
 
     if model is None:
-        model = PPO(
-            "MlpPolicy", env,
-            learning_rate=3e-4,
-            n_steps=args.steps,
-            batch_size=64,
-            n_epochs=4,
-            gamma=0.999,
-            ent_coef=ent_coef,
-            policy_kwargs=dict(net_arch=[512, 256]),
-            verbose=0, seed=args.seed, device="cpu",
-        )
+        if use_recurrent:
+            model = RecurrentPPO(
+                "MlpLstmPolicy", env,
+                learning_rate=3e-4,
+                n_steps=args.steps,
+                batch_size=64,
+                n_epochs=4,
+                gamma=0.999,
+                ent_coef=ent_coef,
+                policy_kwargs=dict(
+                    net_arch=dict(pi=[256, 256], vf=[256, 256]),
+                    lstm_hidden_size=256,
+                    enable_critic_lstm=True,
+                ),
+                verbose=0, seed=args.seed, device="cpu",
+            )
+        else:
+            model = PPO(
+                "MlpPolicy", env,
+                learning_rate=3e-4,
+                n_steps=args.steps,
+                batch_size=64,
+                n_epochs=4,
+                gamma=0.999,
+                ent_coef=ent_coef,
+                policy_kwargs=dict(net_arch=[512, 256]),
+                verbose=0, seed=args.seed, device="cpu",
+            )
 
     cb = Log(baseline_pct=baseline_pct, checkpoint_every=args.checkpoint_every,
              corpus_path=str(THIS / args.corpus_out))
