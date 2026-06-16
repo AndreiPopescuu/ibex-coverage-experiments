@@ -38,7 +38,9 @@ MODULES = [
     # ibex_prefetch_buffer absent: cu ICache=1 e înlocuit de gen_icache,
     # gen_prefetch_buffer nu se elaborează → zero bins în coverage_max.dat.
     "ibex_controller", "ibex_compressed_decoder", "ibex_register_file_ff",
-    "ibex_load_store_unit", "ibex_decoder", "ibex_fetch_fifo",
+    "ibex_load_store_unit", "ibex_decoder",
+    # ibex_fetch_fifo absent: instanțiat în ibex_prefetch_buffer,
+    # care nu se elaborează cu ICache=1 → 0 bins în coverage_max.dat.
     "ibex_counter", "ibex_csr", "ibex_wb_stage",
     "ibex_icache", "ibex_pmp", "ibex_lockstep",
     "ibex_dummy_instr",    # SecureIbex=1 → DummyInstructions=1
