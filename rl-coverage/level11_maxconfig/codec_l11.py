@@ -180,26 +180,7 @@ def encode(op_i: int, rd: int, rs1: int, rs2: int, imm_bucket: int, csr_bucket: 
 
 def emit_program(actions):
     nop = encode(10, 0, 0, 0, 2)  # ADDI x0, x0, 0
-
-    # Prologue: scrie x16 (0xFFFFFFFF, pre-loaded în cocotb) în pmpcfg0-3 și
-    # pmpaddr0-3, plus tdata1/tdata2 (debug triggers). Garantează că semnalele
-    # PMP și trigger togglează în fiecare episod, indiferent de policy.
-    # x16=0xFFFFFFFF → pmpcfg: toate biții R/W/X/mode setați; pmpaddr: adresă nenulă.
-    CSRRW = 27  # op index
-    X16   = 16  # rs1 = x16 (0xFFFFFFFF)
-    _pmp_prologue = [
-        encode(CSRRW, 0, X16, 0, 0, 33),  # CSRRW x0, pmpcfg0,  x16
-        encode(CSRRW, 0, X16, 0, 0, 34),  # CSRRW x0, pmpcfg1,  x16
-        encode(CSRRW, 0, X16, 0, 0, 35),  # CSRRW x0, pmpcfg2,  x16
-        encode(CSRRW, 0, X16, 0, 0, 36),  # CSRRW x0, pmpcfg3,  x16
-        encode(CSRRW, 0, X16, 0, 0, 37),  # CSRRW x0, pmpaddr0, x16
-        encode(CSRRW, 0, X16, 0, 0, 38),  # CSRRW x0, pmpaddr1, x16
-        encode(CSRRW, 0, X16, 0, 0, 39),  # CSRRW x0, pmpaddr2, x16
-        encode(CSRRW, 0, X16, 0, 0, 40),  # CSRRW x0, pmpaddr3, x16
-        encode(CSRRW, 0, X16, 0, 0, 54),  # CSRRW x0, tdata1,   x16
-        encode(CSRRW, 0, X16, 0, 0, 55),  # CSRRW x0, tdata2,   x16
-    ]
-    return _pmp_prologue + [encode(*a) for a in actions] + [nop] * 16
+    return [encode(*a) for a in actions] + [nop] * 16
 
 
 def _self_test():
