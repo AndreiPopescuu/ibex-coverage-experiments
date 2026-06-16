@@ -142,6 +142,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--episodes", type=int, default=3600)
     ap.add_argument("--steps",    type=int, default=256)
+    ap.add_argument("--timeout",  type=int, default=600,
+                    help="Timeout per program subprocess (secunde). "
+                         "Crește proporțional cu --steps (ex: 1024 steps → 600s)")
     ap.add_argument("--seed",     type=int, default=42)
     ap.add_argument("--out",      default="l11_ppo_curve.npz")
     ap.add_argument("--resume",   action="store_true",
@@ -212,6 +215,7 @@ def main():
         episode_steps=args.steps,
         seed=args.seed,
         initial_hits=initial_hits,
+        timeout=args.timeout,
     )
 
     model = None

@@ -73,7 +73,7 @@ def _module_of(key: str) -> str | None:
     return m.group(1).split("__")[0]
 
 
-def run_program(actions):
+def run_program(actions, timeout: int = 600):
     machine = emit_program(actions)
     with open(PROGRAM_JSON, "w") as f:
         json.dump({"n": len(machine), "agent": "l11",
@@ -94,7 +94,7 @@ def run_program(actions):
     proc = subprocess.run(
         [str(VTOP), f"+verilator+coverage+file+{COVDAT}"],
         cwd=str(ML4DV), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout,
     )
     if proc.returncode != 0:
         return None
@@ -105,7 +105,7 @@ class IbexL11Env(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, episode_steps: int = 256, seed: int | None = None,
-                 initial_hits: set | None = None):
+                 initial_hits: set | None = None, timeout: int = 600):
         super().__init__()
         if not VTOP.exists():
             raise FileNotFoundError(
@@ -113,6 +113,7 @@ class IbexL11Env(gym.Env):
                 f"Run `cd cpu && make CONFIG=max` first."
             )
         self.episode_steps = episode_steps
+        self._timeout = timeout
 
         self.action_space = spaces.MultiDiscrete(
             [N_OPS, 32, 32, 32, IMM_BUCKETS, N_CSR_BUCKETS]
@@ -175,7 +176,7 @@ class IbexL11Env(gym.Env):
         reward, info = 0.0, {}
 
         if truncated:
-            summary = run_program(self._actions)
+            summary = run_program(self._actions, timeout=self._timeout)
             if summary is None:
                 info["vtop_failed"] = True
             else:
