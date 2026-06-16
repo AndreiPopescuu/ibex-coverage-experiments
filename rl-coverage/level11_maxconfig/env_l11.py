@@ -34,11 +34,15 @@ from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, emit_program
 MODULES = [
     "ibex_core", "ibex_cs_registers", "ibex_top", "ibex_if_stage",
     "ibex_top_tracing", "ibex_alu", "ibex_id_stage", "ibex_multdiv_fast",
-    "ibex_ex_block", "ibex_tracer", "ibex_prefetch_buffer",
+    "ibex_ex_block", "ibex_tracer",
+    # ibex_prefetch_buffer absent: cu ICache=1 e înlocuit de gen_icache,
+    # gen_prefetch_buffer nu se elaborează → zero bins în coverage_max.dat.
     "ibex_controller", "ibex_compressed_decoder", "ibex_register_file_ff",
     "ibex_load_store_unit", "ibex_decoder", "ibex_fetch_fifo",
     "ibex_counter", "ibex_csr", "ibex_wb_stage",
     "ibex_icache", "ibex_pmp", "ibex_lockstep",
+    "ibex_dummy_instr",    # SecureIbex=1 → DummyInstructions=1
+    "ibex_branch_predict", # BranchPredictor=1
     "cocotb_ibex", "prim_generic_clock_gating",
     "prim_clock_gating", "prim_buf", "prim_generic_buf",
 ]

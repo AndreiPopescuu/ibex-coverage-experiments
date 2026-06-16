@@ -67,9 +67,38 @@ from codec_l10 import (  # noqa: E402
     N_OPS as L10_N_OPS,
     IMM_BUCKETS,
     IMM_BUCKET_VALUES,
-    N_CSR_BUCKETS,
+    L10_CSRS,
     encode as l10_encode,
 )
+
+# CSR pool extins pentru max config:
+#   + pmpcfg0-3  (0x3A0-0x3A3): configurare regiuni PMP — necesar pentru ibex_pmp bins
+#   + pmpaddr0-15 (0x3B0-0x3BF): adrese regiuni PMP
+#   + tselect/tdata1/tdata2 (0x7A0-0x7A2): debug triggers, legale doar cu DbgTriggerEn=1
+#   + mhpmcounter/event 9-14 (0xB09-0xB0E, 0x329-0x32E): contoare HPM extinse
+L11_CSRS = L10_CSRS + [
+    0x3A0, 0x3A1, 0x3A2, 0x3A3,                          # pmpcfg0..3
+    0x3B0, 0x3B1, 0x3B2, 0x3B3, 0x3B4, 0x3B5, 0x3B6, 0x3B7,
+    0x3B8, 0x3B9, 0x3BA, 0x3BB, 0x3BC, 0x3BD, 0x3BE, 0x3BF,  # pmpaddr0..15
+    0x7A0, 0x7A1, 0x7A2,                                  # tselect, tdata1, tdata2
+    0xB09, 0xB0A, 0xB0B, 0xB0C, 0xB0D, 0xB0E,            # mhpmcounter9..14
+    0x329, 0x32A, 0x32B, 0x32C, 0x32D, 0x32E,            # mhpmevent9..14
+]
+N_CSR_BUCKETS = len(L11_CSRS)
+
+_CSR_F3  = {27: 0b001, 28: 0b010, 29: 0b011}   # CSRRW, CSRRS, CSRRC
+_CSRI_F3 = {66: 0b101, 67: 0b110, 68: 0b111}   # CSRRWI, CSRRSI, CSRRCI
+
+
+def _encode_csr_l11(funct3: int, rd: int, rs1: int, csr_bucket: int) -> int:
+    csr = L11_CSRS[csr_bucket % len(L11_CSRS)]
+    return (csr << 20) | ((rs1 & 0x1F) << 15) | (funct3 << 12) | ((rd & 0x1F) << 7) | 0b1110011
+
+
+def _encode_csri_l11(funct3: int, rd: int, rs1: int, csr_bucket: int) -> int:
+    uimm = rs1 & 0x1F
+    csr  = L11_CSRS[csr_bucket % len(L11_CSRS)]
+    return (csr << 20) | ((uimm & 0x1F) << 15) | (funct3 << 12) | ((rd & 0x1F) << 7) | 0b1110011
 
 SHAMT_BUCKET_VALUES = [0, 8, 16, 24, 31]
 assert len(SHAMT_BUCKET_VALUES) == IMM_BUCKETS
@@ -133,6 +162,10 @@ def _i_fixed(imm12: int, rd: int, rs1: int) -> int:
 
 
 def encode(op_i: int, rd: int, rs1: int, rs2: int, imm_bucket: int, csr_bucket: int = 0) -> int:
+    if op_i in _CSR_F3:
+        return _encode_csr_l11(_CSR_F3[op_i], rd, rs1, csr_bucket)
+    if op_i in _CSRI_F3:
+        return _encode_csri_l11(_CSRI_F3[op_i], rd, rs1, csr_bucket)
     if op_i in _R_F3F7:
         f3, f7 = _R_F3F7[op_i]
         return _r_type(f7, f3, rd, rs1, rs2)
@@ -178,14 +211,26 @@ def _self_test():
         assert ((w >> 12) & 0x7) == 0b001, f"op={op_i}: funct3 != 001, 0x{w:08x}"
         assert ((w >> 20) & 0xFFF) == imm12, f"op={op_i}: imm12 mismatch, 0x{w:08x}"
 
-    # Ops L10 (0..86) trebuie să rămână identice
+    # Ops L10 (0..86) trebuie să rămână identice, EXCEPTÂND CSR ops care acum
+    # folosesc L11_CSRS (mai mare) în loc de L10_CSRS.
+    _csr_ops = set(_CSR_F3) | set(_CSRI_F3)
     for op_i in range(L10_N_OPS):
+        if op_i in _csr_ops:
+            continue
         for ib in range(IMM_BUCKETS):
             assert encode(op_i, 5, 6, 7, ib) == l10_encode(op_i, 5, 6, 7, ib), \
                 f"L10 op={op_i} ib={ib} a fost modificat!"
 
+    # Verifică că CSR ops folosesc L11_CSRS
+    w = encode(27, 1, 2, 0, 0, 0)  # CSRRW cu csr_bucket=0 → L11_CSRS[0]
+    assert ((w >> 20) & 0xFFF) == L11_CSRS[0], "CSRRW nu folosește L11_CSRS!"
+    w = encode(27, 1, 2, 0, 0, len(L10_CSRS))  # primul CSR nou (pmpcfg0)
+    assert ((w >> 20) & 0xFFF) == 0x3A0, f"pmpcfg0 encoding greșit: 0x{(w>>20)&0xFFF:03x}"
+
     print(f"[OK] L11 codec self-test: {N_OPS} ops x {IMM_BUCKETS} buckets "
           f"(L10={L10_N_OPS} + {N_OPS - L10_N_OPS} RV32B)")
+    print(f"  CSR pool: {N_CSR_BUCKETS} registre "
+          f"(L10={len(L10_CSRS)}, +{N_CSR_BUCKETS - len(L10_CSRS)} max-specific)")
 
 
 if __name__ == "__main__":
