@@ -7,7 +7,17 @@ Build-ul max trebuie compilat o data, fara tracing:
 Baseline (hits acumulate din replay-ul corpus-ului minimal pe build-ul max):
     python replay_corpus.py --corpus ../corpus_all.json --save-hits l11_baseline_hits.pkl
 
-Usage:
+Curriculum (3 faze cu action space progresiv):
+    # Faza 1 — 45 ops: RV32I core + RV32M + branches + JAL + CSR (porneste din L10 corpus)
+    python train_l11_ppo.py --phase 1 --hits l11_baseline_hits.pkl --episodes 1200 --steps 256
+
+    # Faza 2 — 87 ops: + RV32C + LUI/AUIPC/JALR + exceptii (porneste din coverage faza 1)
+    python train_l11_ppo.py --phase 2 --hits l11_p1_checkpoint_hits.pkl --episodes 1200 --steps 256
+
+    # Faza 3 — 116 ops: full cu RV32B Zba/Zbb/Zbs (porneste din coverage faza 2)
+    python train_l11_ppo.py --phase 3 --hits l11_p2_checkpoint_hits.pkl --episodes 1200 --steps 256
+
+Usage (full, fara curriculum):
     python train_l11_ppo.py --hits l11_baseline_hits.pkl --episodes 3600 --steps 256
     python train_l11_ppo.py --resume --episodes 3600 --steps 256
 """
@@ -20,7 +30,7 @@ THIS = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS.parent / "level5_real_rtl"))
 sys.path.insert(0, str(THIS.parent / "level10_ops"))
 
-from env_l11 import IbexL11Env, MODULES, N_OBS
+from env_l11 import IbexL11Env, MODULES, N_OBS, PHASE_MAX_OPS
 from codec_l11 import N_OPS, N_CSR_BUCKETS
 
 try:
@@ -35,10 +45,14 @@ try:
 except ImportError:
     _RECURRENT_AVAILABLE = False
 
-# ── Checkpoint paths ──────────────────────────────────────────────────────────
-CKPT_MODEL   = THIS / "l11_checkpoint_model"
-CKPT_HITS    = THIS / "l11_checkpoint_hits.pkl"
-CKPT_HISTORY = THIS / "l11_checkpoint_history.npz"
+# ── Checkpoint paths (per-phase, sau generic pentru rulari fara --phase) ──────
+def _ckpt_paths(phase: int | None):
+    tag = f"p{phase}_" if phase else ""
+    return (
+        THIS / f"l11_{tag}checkpoint_model",
+        THIS / f"l11_{tag}checkpoint_hits.pkl",
+        THIS / f"l11_{tag}checkpoint_history.npz",
+    )
 
 # Total bins toggle pe build-ul max (masurat o data via replay_corpus.py).
 # Folosit doar pentru afisarea baseline-ului inainte de primul episod;
@@ -60,11 +74,15 @@ signal.signal(signal.SIGINT, _sigint_handler)
 
 class Log(BaseCallback):
     def __init__(self, baseline_pct: float, checkpoint_every: int = 100,
-                 corpus_path: str | None = None):
+                 corpus_path: str | None = None, ckpt_model=None,
+                 ckpt_hits=None, ckpt_history=None):
         super().__init__()
         self.baseline_pct     = baseline_pct
         self.checkpoint_every = checkpoint_every
         self.corpus_path      = corpus_path
+        self._ckpt_model      = ckpt_model
+        self._ckpt_hits       = ckpt_hits
+        self._ckpt_history    = ckpt_history
         self.history          = []
         self._corpus          = []
 
@@ -124,21 +142,21 @@ class Log(BaseCallback):
             self._corpus = data.get("programs", [])
 
     def _save(self, ep: int, reason: str = "checkpoint"):
-        self.model.save(str(CKPT_MODEL))
+        self.model.save(str(self._ckpt_model))
 
         env = self.training_env.envs[0]
         if hasattr(env, "env"):
             env = env.env
-        with open(CKPT_HITS, "wb") as f:
+        with open(self._ckpt_hits, "wb") as f:
             pickle.dump(env._cum_hits, f)
 
         if self.history:
             eps    = np.array([h["ep"]      for h in self.history])
             cum    = np.array([h["cum_pct"] for h in self.history])
             ep_pct = np.array([h["ep_pct"]  for h in self.history])
-            np.savez(CKPT_HISTORY, ep=eps, cum_pct=cum, ep_pct=ep_pct)
+            np.savez(self._ckpt_history, ep=eps, cum_pct=cum, ep_pct=ep_pct)
 
-        print(f"  [{reason}] ep={ep} salvat → {CKPT_MODEL}.zip "
+        print(f"  [{reason}] ep={ep} salvat → {self._ckpt_model}.zip "
               f"({len(env._cum_hits):,} hits)", flush=True)
 
 
@@ -146,6 +164,9 @@ class Log(BaseCallback):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--phase",    type=int, choices=[1, 2, 3], default=None,
+                    help="Faza curriculum (1=45 ops, 2=87 ops, 3=116 ops). "
+                         "Fara --phase → action space complet (116 ops).")
     ap.add_argument("--episodes", type=int, default=3600)
     ap.add_argument("--steps",    type=int, default=256)
     ap.add_argument("--timeout",  type=int, default=600,
@@ -170,10 +191,14 @@ def main():
                     help="Fișier JSON pentru episoadele cu bins noi (append dacă există)")
     args = ap.parse_args()
 
+    max_ops = PHASE_MAX_OPS[args.phase] if args.phase else N_OPS
+    CKPT_MODEL, CKPT_HITS, CKPT_HISTORY = _ckpt_paths(args.phase)
+
+    phase_label = f"faza {args.phase} ({max_ops} ops)" if args.phase else f"full ({N_OPS} ops)"
     print("=" * 70)
-    print(f"L11 PPO — config maxima (lockstep/ICache/PMP/RV32B on), "
-          f"codec {N_OPS} ops, obs {N_OBS} dims, {args.steps} pași/ep")
-    print(f"  Action space: [{N_OPS} ops, 32 rd, 32 rs1, 32 rs2, 5 imm, {N_CSR_BUCKETS} csr_bucket]")
+    print(f"L11 PPO — config maxima (lockstep/ICache/PMP/RV32B on), {phase_label}, "
+          f"obs {N_OBS} dims, {args.steps} pași/ep")
+    print(f"  Action space: [{max_ops} ops, 32 rd, 32 rs1, 32 rs2, 5 imm, {N_CSR_BUCKETS} csr_bucket]")
     print(f"  Reward: episode_base + toggle_shaped + 0.3× branch")
     print("=" * 70)
 
@@ -202,7 +227,7 @@ def main():
         print(f"  Resume din ep {episodes_done} — {len(initial_hits):,} hits pre-încărcate")
     else:
         if args.resume:
-            print("  [!] Niciun checkpoint L11 găsit — pornesc de la zero")
+            print(f"  [!] Niciun checkpoint găsit pentru {phase_label} — pornesc de la zero")
 
     remaining = args.episodes - episodes_done
     if remaining <= 0:
@@ -232,6 +257,7 @@ def main():
         seed=args.seed,
         initial_hits=initial_hits,
         timeout=args.timeout,
+        max_ops=max_ops,
     )
 
     model = None
@@ -294,7 +320,8 @@ def main():
             )
 
     cb = Log(baseline_pct=baseline_pct, checkpoint_every=args.checkpoint_every,
-             corpus_path=str(THIS / args.corpus_out))
+             corpus_path=str(THIS / args.corpus_out),
+             ckpt_model=CKPT_MODEL, ckpt_hits=CKPT_HITS, ckpt_history=CKPT_HISTORY)
     cb._load_corpus()
     cb.history = history_prev
 

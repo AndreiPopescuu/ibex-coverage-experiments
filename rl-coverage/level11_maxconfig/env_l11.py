@@ -31,6 +31,13 @@ import cov_parser
 
 from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, emit_program
 
+# Curriculum phases: max op index (action[0] in [0, max_ops))
+# Phase 1 (45 ops): core RV32I ALU, loads/stores, CSR, RV32M, branches, JAL
+# Phase 2 (87 ops): + RV32C compressed, LUI/AUIPC/JALR/ECALL/EBREAK/FENCE,
+#                     L9 extras (MRET/WFI/FENCE_I/C_J*/C_B*/...), L10 misalign
+# Phase 3 (116 ops): full L11 with RV32B Zba/Zbb/Zbs
+PHASE_MAX_OPS: dict[int, int] = {1: 45, 2: 87, 3: N_OPS}
+
 MODULES = [
     "ibex_core", "ibex_cs_registers", "ibex_top", "ibex_if_stage",
     "ibex_top_tracing", "ibex_alu", "ibex_id_stage", "ibex_multdiv_fast",
@@ -105,7 +112,8 @@ class IbexL11Env(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, episode_steps: int = 256, seed: int | None = None,
-                 initial_hits: set | None = None, timeout: int = 600):
+                 initial_hits: set | None = None, timeout: int = 600,
+                 max_ops: int = N_OPS):
         super().__init__()
         if not VTOP.exists():
             raise FileNotFoundError(
@@ -114,9 +122,10 @@ class IbexL11Env(gym.Env):
             )
         self.episode_steps = episode_steps
         self._timeout = timeout
+        self._max_ops = max(1, min(max_ops, N_OPS))
 
         self.action_space = spaces.MultiDiscrete(
-            [N_OPS, 32, 32, 32, IMM_BUCKETS, N_CSR_BUCKETS]
+            [self._max_ops, 32, 32, 32, IMM_BUCKETS, N_CSR_BUCKETS]
         )
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(N_OBS,), dtype=np.float32)
