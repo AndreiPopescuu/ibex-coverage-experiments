@@ -1,4 +1,5 @@
-"""codec_l11.py — L10 (87 ops, RV32IMC) + RV32B (Zba/Zbb/Zbs) = 116 ops.
+"""codec_l11.py — L10 (87 ops, RV32IMC) + RV32B (Zba/Zbb/Zbs = 116 ops,
++ zbp/zbc/zbe/zbf legacy draft ops = 143 ops).
 
 Codec-ul L10 e RV32IMC-only, deci pe configul max (RV32B=RV32BFull) un bloc
 mare de bins din ibex_alu / ibex_decoder rămâne neacoperit: tot ce decode-ul
@@ -54,7 +55,51 @@ Encodinguri verificate direct din ibex_decoder.sv (RV32BFull):
     BINVI   f3=001 f7=0110100
     BEXTI   f3=101 f7=0100100
 
-Total ops noi: 3 + 5 + 4 + 3 + 5 + 1 + 4 + 4 = 29  →  N_OPS = 87 + 29 = 116.
+Total ops noi (Zba/Zbb/Zbs): 3 + 5 + 4 + 3 + 5 + 1 + 4 + 4 = 29  →  116 ops.
+
+Restul RV32BFull (draft legacy bitmanip, RV32BOTEarlGrey ⊇ RV32BFull pt. astea):
+zbp/zbc/zbe/zbf, legal doar cand RV32B in {RV32BOTEarlGrey, RV32BFull}, cu
+excepția BFP (legal pt. orice RV32B != RV32BNone) și BCOMPRESS/BDECOMPRESS
+(legal doar RV32B == RV32BFull). Encodinguri din ibex_decoder.sv, blocurile
+illegal_insn pt. OPCODE_OP ({instr[31:25],instr[14:12]}) și OPCODE_OP_IMM
+(f3 in {001,101}, unique case(instr[31:27]) [+ instr[26:20] pt. crc32]).
+
+  zbp (R-type):
+    SLO      f7=0010000 f3=001      SRO      f7=0010000 f3=101
+    GREV     f7=0110100 f3=101      GORC     f7=0010100 f3=101
+    SHFL     f7=0000100 f3=001      UNSHFL   f7=0000100 f3=101
+    XPERM.N  f7=0010100 f3=010      XPERM.B  f7=0010100 f3=100
+    XPERM.H  f7=0010100 f3=110
+
+  zbp immediate (I-type OP-IMM, shamt=imm[4:0]; instr[25] e don't-care
+  in decoder, fixat pe 0 aici):
+    SLOI     f3=001 f7=0010000      SROI     f3=101 f7=0010000
+    GREVI    f3=101 f7=0110100      GORCI    f3=101 f7=0010100
+    SHFLI    f3=001 f7=0000100      UNSHFLI  f3=101 f7=0000100
+
+  zbc (R-type, carry-less multiply):
+    CLMUL    f7=0000101 f3=001
+    CLMULR   f7=0000101 f3=010
+    CLMULH   f7=0000101 f3=011
+
+  zbe (R-type):
+    BCOMPRESS    f7=0000100 f3=110
+    BDECOMPRESS  f7=0100100 f3=110
+
+  zbf (R-type, bit-field place):
+    BFP      f7=0100100 f3=111
+
+  crc32/crc32c (I-type OP-IMM, f3=001, imm12 fix — grupul CLZ, imm[11:7]=
+  01100, imm[6:5]=00, imm[4:0]=selector):
+    CRC32.B   imm12=0x610   CRC32C.B  imm12=0x618
+    CRC32.H   imm12=0x611   CRC32C.H  imm12=0x619
+    CRC32.W   imm12=0x612   CRC32C.W  imm12=0x61A
+
+Total ops noi (zbp/zbc/zbe/zbf): 9 + 6 + 3 + 2 + 1 + 6 = 27  →  N_OPS = 116 + 27 = 143.
+
+Rămân neadăugate (necesită rs3, deci extindere de action-space, nu doar
+codec): CMIX, CMOV, FSL, FSR (R-type, {instr[26],instr[13:12]}=={1,2'b01})
+și FSRI (OP-IMM, f3=101, instr[26]=1).
 """
 
 import sys
@@ -76,6 +121,7 @@ from codec_l10 import (  # noqa: E402
 #   + pmpaddr0-15 (0x3B0-0x3BF): adrese regiuni PMP
 #   + tselect/tdata1/tdata2 (0x7A0-0x7A2): debug triggers, legale doar cu DbgTriggerEn=1
 #   + mhpmcounter/event 9-14 (0xB09-0xB0E, 0x329-0x32E): contoare HPM extinse
+#   + cpuctrl (0x7C0): dummy_instr_en bit — necesar pentru ibex_dummy_instr coverage
 L11_CSRS = L10_CSRS + [
     0x3A0, 0x3A1, 0x3A2, 0x3A3,                          # pmpcfg0..3
     0x3B0, 0x3B1, 0x3B2, 0x3B3, 0x3B4, 0x3B5, 0x3B6, 0x3B7,
@@ -83,6 +129,7 @@ L11_CSRS = L10_CSRS + [
     0x7A0, 0x7A1, 0x7A2,                                  # tselect, tdata1, tdata2
     0xB09, 0xB0A, 0xB0B, 0xB0C, 0xB0D, 0xB0E,            # mhpmcounter9..14
     0x329, 0x32A, 0x32B, 0x32C, 0x32D, 0x32E,            # mhpmevent9..14
+    0x7C0,                                                 # cpuctrl: dummy_instr_en (SecureIbex)
 ]
 N_CSR_BUCKETS = len(L11_CSRS)
 
@@ -113,7 +160,24 @@ RORI   = 107
 BCLR   = 108; BSET   = 109; BINV   = 110; BEXT = 111
 BCLRI  = 112; BSETI  = 113; BINVI  = 114; BEXTI = 115
 
-N_OPS = 116
+# ── Op indices noi (116..142) — restul RV32BFull (draft legacy bitmanip,
+#    identic cu RV32BOTEarlGrey pt. majoritatea): zbp/zbc/zbe/zbf rămase
+#    neacoperite de Zba/Zbb/Zbs. Encodinguri verificate direct din
+#    ibex_decoder.sv (blocurile illegal_insn pt. OPCODE_OP / OPCODE_OP_IMM).
+SLO    = 116; SRO    = 117
+GREV   = 118; GORC   = 119
+SHFL   = 120; UNSHFL = 121
+XPERM_N = 122; XPERM_B = 123; XPERM_H = 124
+CLMUL  = 125; CLMULR = 126; CLMULH = 127
+BCOMPRESS = 128; BDECOMPRESS = 129
+BFP    = 130
+SLOI   = 131; SROI   = 132
+GREVI  = 133; GORCI  = 134
+SHFLI  = 135; UNSHFLI = 136
+CRC32_B = 137; CRC32_H = 138; CRC32_W = 139
+CRC32C_B = 140; CRC32C_H = 141; CRC32C_W = 142
+
+N_OPS = 143
 
 # ── R-type (opcode=0b0110011) ───────────────────────────────────────────────
 _R_F3F7 = {
@@ -125,6 +189,14 @@ _R_F3F7 = {
     PACK:   (0b100, 0b0000100), PACKH:  (0b111, 0b0000100), PACKU: (0b100, 0b0100100),
     BCLR:   (0b001, 0b0100100), BSET:   (0b001, 0b0010100),
     BINV:   (0b001, 0b0110100), BEXT:   (0b101, 0b0100100),
+    # zbp/zbc/zbe/zbf (legacy draft bitmanip, RV32BOTEarlGrey|RV32BFull)
+    SLO:    (0b001, 0b0010000), SRO:    (0b101, 0b0010000),
+    GREV:   (0b101, 0b0110100), GORC:   (0b101, 0b0010100),
+    SHFL:   (0b001, 0b0000100), UNSHFL: (0b101, 0b0000100),
+    XPERM_N: (0b010, 0b0010100), XPERM_B: (0b100, 0b0010100), XPERM_H: (0b110, 0b0010100),
+    CLMUL:  (0b001, 0b0000101), CLMULR: (0b010, 0b0000101), CLMULH: (0b011, 0b0000101),
+    BCOMPRESS: (0b110, 0b0000100), BDECOMPRESS: (0b110, 0b0100100),
+    BFP:    (0b111, 0b0100100),
 }
 
 # ── I-type shamt (opcode=0b0010011, funct7 fix + imm[4:0]=shamt) ───────────
@@ -134,6 +206,13 @@ _I_SHAMT_F3F7 = {
     BSETI: (0b001, 0b0010100),
     BINVI: (0b001, 0b0110100),
     BEXTI: (0b101, 0b0100100),
+    # zbp immediate variants (instr[25] e don't-care in decoder -> fixat pe 0)
+    SLOI:  (0b001, 0b0010000),
+    SROI:  (0b101, 0b0010000),
+    GREVI: (0b101, 0b0110100),
+    GORCI: (0b101, 0b0010100),
+    SHFLI: (0b001, 0b0000100),
+    UNSHFLI: (0b101, 0b0000100),
 }
 
 # ── I-type fixed imm12 (opcode=0b0010011, funct3=001, no shamt) ────────────
@@ -143,6 +222,13 @@ _I_FIXED12 = {
     CPOP:   0x602,
     SEXT_B: 0x604,
     SEXT_H: 0x605,
+    # crc32/crc32c: imm[11:7]=01100 (grup CLZ), imm[6:5]=00, imm[4:0]=selector
+    CRC32_B:  0x610,
+    CRC32_H:  0x611,
+    CRC32_W:  0x612,
+    CRC32C_B: 0x618,
+    CRC32C_H: 0x619,
+    CRC32C_W: 0x61A,
 }
 
 

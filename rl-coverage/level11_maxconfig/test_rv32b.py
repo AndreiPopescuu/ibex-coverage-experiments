@@ -83,7 +83,7 @@ def run_words(words):
     return cov_parser.parse(str(COVDAT))
 
 
-# Toate cele 29 ops RV32B noi: codec_l11.N_OPS - codec_l10.N_OPS
+# Toate cele 56 ops RV32B noi: codec_l11.N_OPS - codec_l10.N_OPS
 _NEW_OPS_START = 87
 _NEW_OPS = list(range(_NEW_OPS_START, c11.N_OPS))
 _NEW_OP_NAMES = {
@@ -95,6 +95,19 @@ _NEW_OP_NAMES = {
     107: "RORI",
     108: "BCLR", 109: "BSET", 110: "BINV", 111: "BEXT",
     112: "BCLRI", 113: "BSETI", 114: "BINVI", 115: "BEXTI",
+    # zbp/zbc/zbe/zbf (legacy draft bitmanip, adaugate ulterior)
+    116: "SLO", 117: "SRO",
+    118: "GREV", 119: "GORC",
+    120: "SHFL", 121: "UNSHFL",
+    122: "XPERM_N", 123: "XPERM_B", 124: "XPERM_H",
+    125: "CLMUL", 126: "CLMULR", 127: "CLMULH",
+    128: "BCOMPRESS", 129: "BDECOMPRESS",
+    130: "BFP",
+    131: "SLOI", 132: "SROI",
+    133: "GREVI", 134: "GORCI",
+    135: "SHFLI", 136: "UNSHFLI",
+    137: "CRC32_B", 138: "CRC32_H", 139: "CRC32_W",
+    140: "CRC32C_B", 141: "CRC32C_H", 142: "CRC32C_W",
 }
 
 

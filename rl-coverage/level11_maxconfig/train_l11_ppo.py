@@ -1,5 +1,6 @@
 """train_l11_ppo.py — PPO pe configuratia "max" (lockstep, ICache, PMP, RV32B
-gated on), folosind codec_l11 (116 ops: L10 RV32IMC + 29 RV32B Zba/Zbb/Zbs).
+gated on), folosind codec_l11 (143 ops: L10 RV32IMC + 29 RV32B Zba/Zbb/Zbs
++ 27 RV32B zbp/zbc/zbe/zbf).
 
 Build-ul max trebuie compilat o data, fara tracing:
     cd cpu && make CONFIG=max sim_build_max/Vtop
@@ -14,7 +15,7 @@ Curriculum (3 faze cu action space progresiv):
     # Faza 2 — 87 ops: + RV32C + LUI/AUIPC/JALR + exceptii (porneste din coverage faza 1)
     python train_l11_ppo.py --phase 2 --hits l11_p1_checkpoint_hits.pkl --episodes 1200 --steps 256
 
-    # Faza 3 — 116 ops: full cu RV32B Zba/Zbb/Zbs (porneste din coverage faza 2)
+    # Faza 3 — 143 ops: full cu RV32B Zba/Zbb/Zbs + zbp/zbc/zbe/zbf (porneste din coverage faza 2)
     python train_l11_ppo.py --phase 3 --hits l11_p2_checkpoint_hits.pkl --episodes 1200 --steps 256
 
 Usage (full, fara curriculum):
@@ -165,8 +166,8 @@ class Log(BaseCallback):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase",    type=int, choices=[1, 2, 3], default=None,
-                    help="Faza curriculum (1=45 ops, 2=87 ops, 3=116 ops). "
-                         "Fara --phase → action space complet (116 ops).")
+                    help="Faza curriculum (1=45 ops, 2=87 ops, 3=143 ops). "
+                         "Fara --phase → action space complet (143 ops).")
     ap.add_argument("--episodes", type=int, default=3600)
     ap.add_argument("--steps",    type=int, default=256)
     ap.add_argument("--timeout",  type=int, default=600,

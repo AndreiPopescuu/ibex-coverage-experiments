@@ -1,6 +1,6 @@
 """env_l11.py — env for the "max" Ibex build (cocotb_ibex_max.sv: PMP,
-ICache, RV32B, lockstep, ... all on), using codec_l11 (116 ops:
-L10's 87 RV32IMC ops + 29 RV32B ops from Zba/Zbb/Zbs).
+ICache, RV32B, lockstep, ... all on), using codec_l11 (143 ops:
+L10's 87 RV32IMC ops + 29 RV32B Zba/Zbb/Zbs + 27 RV32B zbp/zbc/zbe/zbf).
 
 Build the matching Vtop once with:
     cd cpu && make CONFIG=max
@@ -35,7 +35,8 @@ from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, emit_program
 # Phase 1 (45 ops): core RV32I ALU, loads/stores, CSR, RV32M, branches, JAL
 # Phase 2 (87 ops): + RV32C compressed, LUI/AUIPC/JALR/ECALL/EBREAK/FENCE,
 #                     L9 extras (MRET/WFI/FENCE_I/C_J*/C_B*/...), L10 misalign
-# Phase 3 (116 ops): full L11 with RV32B Zba/Zbb/Zbs
+# Phase 3 (143 ops): full L11 — RV32B Zba/Zbb/Zbs (87->116) +
+#                     zbp/zbc/zbe/zbf legacy draft ops (116->143)
 PHASE_MAX_OPS: dict[int, int] = {1: 45, 2: 87, 3: N_OPS}
 
 MODULES = [
