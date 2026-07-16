@@ -122,6 +122,11 @@ from codec_l10 import (  # noqa: E402
 #   + tselect/tdata1/tdata2 (0x7A0-0x7A2): debug triggers, legale doar cu DbgTriggerEn=1
 #   + mhpmcounter/event 9-14 (0xB09-0xB0E, 0x329-0x32E): contoare HPM extinse
 #   + cpuctrl (0x7C0): dummy_instr_en bit — necesar pentru ibex_dummy_instr coverage
+#   + secureseed (0x7C1): dummy_instr_seed_o = csr_wdata_int, XOR-at in seed-ul LFSR
+#     din ibex_dummy_instr.sv (dummy_instr_seed_d = seed_q ^ seed_i). Fara niciun
+#     write pe acest CSR, LFSR-ul porneste mereu din RndCnstLfsrSeed (constanta de
+#     compilare) si urmeaza aceeasi secventa determinista la fiecare episod — asta
+#     bloca acoperirea ibex_dummy_instr la un plafon fix indiferent de antrenament.
 L11_CSRS = L10_CSRS + [
     0x3A0, 0x3A1, 0x3A2, 0x3A3,                          # pmpcfg0..3
     0x3B0, 0x3B1, 0x3B2, 0x3B3, 0x3B4, 0x3B5, 0x3B6, 0x3B7,
@@ -130,6 +135,7 @@ L11_CSRS = L10_CSRS + [
     0xB09, 0xB0A, 0xB0B, 0xB0C, 0xB0D, 0xB0E,            # mhpmcounter9..14
     0x329, 0x32A, 0x32B, 0x32C, 0x32D, 0x32E,            # mhpmevent9..14
     0x7C0,                                                 # cpuctrl: dummy_instr_en (SecureIbex)
+    0x7C1,                                                 # secureseed: reseed LFSR dummy_instr
 ]
 N_CSR_BUCKETS = len(L11_CSRS)
 
