@@ -22,8 +22,6 @@ L5     = (THIS.parent / "level5_real_rtl").resolve()
 L10    = (THIS.parent / "level10_ops").resolve()
 ML4DV  = (THIS.parent.parent / "cpu").resolve()
 VTOP   = ML4DV / "sim_build_max" / "Vtop"
-COVDAT = ML4DV / "coverage_max.dat"
-PROGRAM_JSON = "/tmp/rl_l11.json"
 
 sys.path.insert(0, str(L5))
 sys.path.insert(0, str(L10))
@@ -81,9 +79,9 @@ def _module_of(key: str) -> str | None:
     return m.group(1).split("__")[0]
 
 
-def run_program(actions, timeout: int = 600):
+def run_program(actions, program_json: str, covdat: Path, timeout: int = 600):
     machine = emit_program(actions)
-    with open(PROGRAM_JSON, "w") as f:
+    with open(program_json, "w") as f:
         json.dump({"n": len(machine), "agent": "l11",
                    "machine_code": [int(m) for m in machine]}, f)
     env = os.environ.copy()
@@ -98,15 +96,15 @@ def run_program(actions, timeout: int = 600):
         + ":" + env.get("PYTHONPATH", "")
     )
     env["MODULE"]     = "test_run_for_l8"
-    env["RL_L8_JSON"] = PROGRAM_JSON
+    env["RL_L8_JSON"] = program_json
     proc = subprocess.run(
-        [str(VTOP), f"+verilator+coverage+file+{COVDAT}"],
+        [str(VTOP), f"+verilator+coverage+file+{covdat}"],
         cwd=str(ML4DV), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout,
     )
     if proc.returncode != 0:
         return None
-    return cov_parser.parse(str(COVDAT))
+    return cov_parser.parse(str(covdat))
 
 
 class IbexL11Env(gym.Env):
@@ -124,6 +122,15 @@ class IbexL11Env(gym.Env):
         self.episode_steps = episode_steps
         self._timeout = timeout
         self._max_ops = max(1, min(max_ops, N_OPS))
+
+        # Path-uri unice per proces — esential pentru rulare paralela (SubprocVecEnv):
+        # fara asta, mai multe instante ar scrie in acelasi /tmp/rl_l11.json si
+        # acelasi coverage_max.dat si s-ar calca reciproc. os.getpid() e evaluat
+        # aici (in __init__), deci reflecta corect PID-ul procesului worker, nu
+        # PID-ul parintelui de la momentul import-ului modulului.
+        pid = os.getpid()
+        self._program_json = f"/tmp/rl_l11_{pid}.json"
+        self._covdat        = ML4DV / f"coverage_max_{pid}.dat"
 
         self.action_space = spaces.MultiDiscrete(
             [self._max_ops, 32, 32, 32, IMM_BUCKETS, N_CSR_BUCKETS]
@@ -186,7 +193,8 @@ class IbexL11Env(gym.Env):
         reward, info = 0.0, {}
 
         if truncated:
-            summary = run_program(self._actions, timeout=self._timeout)
+            summary = run_program(self._actions, self._program_json, self._covdat,
+                                   timeout=self._timeout)
             if summary is None:
                 info["vtop_failed"] = True
             else:

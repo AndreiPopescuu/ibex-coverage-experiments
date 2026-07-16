@@ -37,6 +37,7 @@ from codec_l11 import N_OPS, N_CSR_BUCKETS
 try:
     from stable_baselines3 import PPO
     from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 except ImportError:
     print("[ERROR] pip install stable-baselines3"); sys.exit(1)
 
@@ -89,38 +90,43 @@ class Log(BaseCallback):
 
     def _on_step(self):
         global _stop_requested
-        info = self.locals.get("infos", [{}])[0]
-        if "cum_pct" not in info:
-            return True
+        # Cu n_envs > 1, toate mediile sunt sincronizate (acelasi episode_steps),
+        # deci pot termina episodul in aceeasi rundă — "infos" are o intrare per
+        # mediu, dar doar cele care tocmai s-au truncat au "cum_pct". Procesăm
+        # pe rand fiecare episod incheiat in aceasta runda.
+        infos = self.locals.get("infos", [{}])
+        for info in infos:
+            if "cum_pct" not in info:
+                continue
 
-        ep      = len(self.history) + 1
-        cum     = info["cum_pct"]
-        new     = info.get("new_hits_vs_cum", 0)
-        worst   = info.get("worst_mod", "?")
-        worst_p = info.get("worst_pct", 0.0)
-        self.history.append({
-            "ep": ep, "cum_pct": cum,
-            "ep_pct": info["ep_pct"], "new_hits": new,
-        })
-        new_br = info.get("new_branch_hits", 0)
-        delta  = cum - self.baseline_pct
-        print(f"  ep {ep:>4} | ep {info['ep_pct']:>5.2f}% | cum {cum:>5.2f}% | "
-              f"tog+{new:<4} br+{new_br:<3} | Δ {delta:>+6.2f}pp | worst: {worst} {worst_p:.1f}%",
-              flush=True)
-
-        words = info.get("ep_words")
-        if words and self.corpus_path:
-            self._corpus.append({
-                "ep": ep, "words": words,
-                "new_hits": new, "cum_pct": round(cum, 3),
+            ep      = len(self.history) + 1
+            cum     = info["cum_pct"]
+            new     = info.get("new_hits_vs_cum", 0)
+            worst   = info.get("worst_mod", "?")
+            worst_p = info.get("worst_pct", 0.0)
+            self.history.append({
+                "ep": ep, "cum_pct": cum,
+                "ep_pct": info["ep_pct"], "new_hits": new,
             })
-            self._save_corpus(cum)
+            new_br = info.get("new_branch_hits", 0)
+            delta  = cum - self.baseline_pct
+            print(f"  ep {ep:>4} | ep {info['ep_pct']:>5.2f}% | cum {cum:>5.2f}% | "
+                  f"tog+{new:<4} br+{new_br:<3} | Δ {delta:>+6.2f}pp | worst: {worst} {worst_p:.1f}%",
+                  flush=True)
 
-        if ep % self.checkpoint_every == 0:
-            self._save(ep, reason="checkpoint")
+            words = info.get("ep_words")
+            if words and self.corpus_path:
+                self._corpus.append({
+                    "ep": ep, "words": words,
+                    "new_hits": new, "cum_pct": round(cum, 3),
+                })
+                self._save_corpus(cum)
+
+            if ep % self.checkpoint_every == 0:
+                self._save(ep, reason="checkpoint")
 
         if _stop_requested:
-            self._save(ep, reason="interrupt")
+            self._save(len(self.history), reason="interrupt")
             return False
 
         return True
@@ -145,11 +151,14 @@ class Log(BaseCallback):
     def _save(self, ep: int, reason: str = "checkpoint"):
         self.model.save(str(self._ckpt_model))
 
-        env = self.training_env.envs[0]
-        if hasattr(env, "env"):
-            env = env.env
+        # get_attr merge peste toate workerii (functioneaza identic pentru
+        # DummyVecEnv si SubprocVecEnv — spre deosebire de .envs[0], care nu
+        # exista la SubprocVecEnv si oricum ar pierde hits-urile descoperite
+        # de ceilalti workeri).
+        hit_sets    = self.training_env.get_attr("_cum_hits")
+        merged_hits = set().union(*hit_sets) if hit_sets else set()
         with open(self._ckpt_hits, "wb") as f:
-            pickle.dump(env._cum_hits, f)
+            pickle.dump(merged_hits, f)
 
         if self.history:
             eps    = np.array([h["ep"]      for h in self.history])
@@ -158,7 +167,8 @@ class Log(BaseCallback):
             np.savez(self._ckpt_history, ep=eps, cum_pct=cum, ep_pct=ep_pct)
 
         print(f"  [{reason}] ep={ep} salvat → {self._ckpt_model}.zip "
-              f"({len(env._cum_hits):,} hits)", flush=True)
+              f"({len(merged_hits):,} hits, merged din {len(hit_sets)} worker(i))",
+              flush=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -181,6 +191,10 @@ def main():
                     help="Fișier .pkl cu hits pre-acumulate "
                          "(ex: l11_baseline_hits.pkl din replay_corpus.py)")
     ap.add_argument("--checkpoint-every", type=int, default=100)
+    ap.add_argument("--n-envs", type=int, default=1,
+                    help="Nr. de medii paralele (SubprocVecEnv, cate un Vtop subprocess "
+                         "per worker). Fiecare worker are hits/coverage proprii — se "
+                         "unesc doar la checkpoint save, nu se sincronizeaza live.")
     ap.add_argument("--ent-coef", type=float, default=None,
                     help="Suprascrie ent_coef (ex: 0.15 pentru mai multă explorare)")
     ap.add_argument("--recurrent", action="store_true",
@@ -239,6 +253,8 @@ def main():
     print(f"  Episoade totale: {args.episodes}  (rămase: {remaining})")
     print(f"  Pași/episod:     {args.steps}")
     print(f"  Obs dims:        {N_OBS}")
+    print(f"  Medii paralele:  {max(1, args.n_envs)} "
+          f"({'SubprocVecEnv' if args.n_envs > 1 else 'DummyVecEnv'})")
     ent_coef = args.ent_coef if args.ent_coef is not None else 0.08
     use_recurrent = args.recurrent and _RECURRENT_AVAILABLE
     if args.recurrent and not _RECURRENT_AVAILABLE:
@@ -253,13 +269,26 @@ def main():
     print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'tog+':>5} {'br+':>4} | {'Δbaseline':>10} | worst module")
     print("-" * 75)
 
-    env = IbexL11Env(
-        episode_steps=args.steps,
-        seed=args.seed,
-        initial_hits=initial_hits,
-        timeout=args.timeout,
-        max_ops=max_ops,
-    )
+    def _make_env(rank: int):
+        def _init():
+            return IbexL11Env(
+                episode_steps=args.steps,
+                seed=args.seed + rank,
+                initial_hits=initial_hits,
+                timeout=args.timeout,
+                max_ops=max_ops,
+            )
+        return _init
+
+    n_envs = max(1, args.n_envs)
+    if n_envs > 1:
+        # Fiecare worker porneste cu acelasi initial_hits (baseline-ul de la --hits
+        # / --resume), apoi diverge in timpul antrenarii — nu se sincronizeaza live
+        # intre workeri (ar cere IPC pe fiecare step si ar anula castigul de viteza).
+        # Se unesc doar la fiecare checkpoint save (_save() foloseste get_attr).
+        env = SubprocVecEnv([_make_env(i) for i in range(n_envs)])
+    else:
+        env = DummyVecEnv([_make_env(0)])
 
     model = None
 
