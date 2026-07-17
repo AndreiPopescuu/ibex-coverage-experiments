@@ -1,0 +1,3 @@
+commit: 8ed87e07e3331561bce93af1568d9b376948e701
+fetched: 2026-07-17 via fusesoc library add ibex https://github.com/lowRISC/ibex.git
+core: lowrisc:ibex:ibex_top_tracing:0.1 (target=default, tool=verilator)

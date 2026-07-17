@@ -1,0 +1,104 @@
+Ibex: RTL vendorizat vechi vs. lowRISC/ibex actual — rezumat comparatie
+========================================================================
+(generat 2026-07-17, in urma unei sesiuni de investigatie toggle-coverage)
+
+1. CE S-A FACUT
+----------------
+- Vendorizat RTL curent de la github.com/lowRISC/ibex, branch master,
+  commit 8ed87e07e3331561bce93af1568d9b376948e701 (2026-07-14), via FuseSoC,
+  in cpu/src_upstream/ (nu atinge cpu/src/, copia veche vendorizata cu mult
+  timp in urma, fara commit inregistrat).
+- Comparatie parametri: RTL-ul vechi din proiect ii lipsesc RV32ZC (Zca/
+  Zcb/Zcmp), PMPRstCfg/PMPRstAddr/PMPRstMsecCfg explicit, LockstepOffset,
+  MemECC/MemDataWidth explicit, CsrMvendorId/CsrMimpId, DmBaseAddr/DmAddrMask
+  — toate adaugate in lowRISC/ibex dupa momentul vendorizarii initiale.
+- Construite 2 variante noi pe RTL-ul proaspat, cu testbench-ul cocotb
+  existent (test_run_for_l8.py):
+    * cocotb_ibex_max_upstream.sv      — mirror al configuratiei "max" a
+                                          proiectului, plus parametrii noi
+                                          la valorile lor complete
+    * cocotb_ibex_opentitan_upstream.sv — parametri IDENTICI cu presetarea
+                                          oficiala "opentitan" din
+                                          ibex_configs.yaml al lowRISC
+
+2. REZULTATE COVERAGE (Verilator, config "opentitan" exact)
+--------------------------------------------------------------
+Corpus fix (915 instructiuni, acopera determinist toate cele 143 op-uri
+din codec_l11 — RV32IMC + RV32B Zba/Zbb/Zbs + 27 op-uri draft legacy
+zbp/zbc/zbe/zbf):
+    toggle : 25905/38696  (66.94%)
+    branch :   520/896    (58.04%)
+    line   :   674/1807   (37.30%)
+
+Corpus constrained-random (4057 instructiuni, generator propriu inspirat
+din strategia riscv-dv a lowRISC — ponderi pe categorii de op-uri +
+injectare deliberata de hazard RAW + bias spre x0/rs1==rs2 + bucket-uri
+imm/CSR polarizate spre extreme):
+    toggle : 18971/38696  (49.03%)
+    branch :   426/896    (47.54%)
+    line   :   476/1807   (26.34%)
+    -> MAI SLAB decat corpusul fix, desi are 4.4x mai multe instructiuni.
+       Cauza probabila: bias-ul spre valori extreme la selectia CSR a
+       subesantionat cele ~50 de CSR-uri din pool (inclusiv cele 16 regiuni
+       PMP), pe care corpusul fix le cicleaza determinist. Concluzie utila:
+       volumul de instructiuni nu garanteaza coverage mai mare — un sweep
+       sistematic poate bate un random prost calibrat, ceea ce motiveaza
+       nevoia unei abordari ghidate de coverage (RL) fata de random simplu.
+
+3. REZULTATUL OFICIAL lowRISC (din raportul lor public)
+----------------------------------------------------------
+Sursa: https://ibex.reports.lowrisc.org/opentitan/latest/report.html
+(link citat direct din README.md al repo-ului lor)
+    Toggle: 90.0%  |  Branch: 89.0%  |  Statement: 94.9%  |  FSM: 100.0%
+    Simulator: Cadence Xcelium 21.09-s006
+    Stimul: UVM + riscv-dv (generator constrans-aleator), co-simulare Spike
+    Volum: 1530 rulari de test (49 categorii), fiecare test avand pana la
+    ~10.000+ instructiuni per iteratie (NU 1530 instructiuni — 1530 e
+    numarul de TESTE, nu de instructiuni)
+    Commit raportat: 8ed87e0 — acelasi commit vendorizat si de noi.
+
+4. DE CE NU SUNT DIRECT COMPARABILE NUMERELE
+------------------------------------------------
+a) Simulator diferit: Verilator (noi, open-source) vs Cadence Xcelium
+   (ei, comercial) — algoritmi diferiti de instrumentare a coverage-ului
+   de toggle => bin-uri numarate diferit chiar pe RTL si parametri identici.
+b) Testbench radical diferit:
+   - Al nostru: doar interfata de memorie (raspunde la cereri instr/data),
+     fara intreruperi, fara debug, fara verificare de corectitudine.
+   - Al lor: mediu UVM complet — co-simulare cu Spike (verifica
+     corectitudine instructiune-cu-instructiune, nu doar executia), agent
+     de intreruperi randomizat, agent de debug, PMP exercitat efectiv cu
+     scrieri CSR + acces testat, memorie cu erori/intarzieri randomizate,
+     semnalizare interactiva test<->testbench (ex: mcounteren_test).
+c) Testele lor nu sunt publice — doar raportul de coverage e public;
+   instructiunile efective generate (cu seed-uri aleatoare noi in fiecare
+   noapte) nu sunt salvate/publicate nicaieri. Chiar rezultatul lor
+   (90.0%) e nereproductibil exact de ei insisi — variaza usor de la o
+   rulare la alta.
+d) Generatorul lor real (google_riscv-dv, vendorizat complet si la noi in
+   cpu/src_upstream/../vendor/google_riscv-dv/ prin checkout-ul FuseSoC)
+   ruleaza implicit prin VCS/Xcelium — nu avem licenta sa-l rulam identic;
+   varianta Python pura (pygen/) e marcata explicit "experimental".
+
+5. CE E REALIST DE FACUT IN CONTINUARE (fara unelte comerciale)
+--------------------------------------------------------------------
+- Extins corpusul / corectat bias-ul din constrained_random_l11.py
+  (selectie uniforma pe CSR-uri in loc de polarizata spre extreme)
+- Adaugat intreruperi randomizate, PMP exercitat real, memorie cu
+  comportament randomizat (fezabil in Python/cocotb, fara unelte noi)
+- Legat fisierele de functional coverage ale ibex-ului insusi
+  (dv/uvm/core_ibex/fcov/*.sv — open-source, Apache-licentiate, deja
+  vendorizate) in build-ul Verilator, pentru coverage functional real
+- Co-simulare cu Spike (open-source, riscv-isa-sim) — nu e instalat inca
+  in mediul curent, dar e fezabil de adaugat pentru verificare de
+  corectitudine, nu doar coverage
+
+Fisiere relevante:
+  cpu/src_upstream/                          — RTL vendorizat, cu provenienta in
+                                                 _UPSTREAM_PROVENANCE.txt
+  cpu/cocotb_ibex_max_upstream.sv             — wrapper config "max"
+  cpu/cocotb_ibex_opentitan_upstream.sv       — wrapper config "opentitan" exacta
+  cpu/Makefile.upstream / Makefile.upstream_opentitan
+  rl-coverage/level11_maxconfig/gen_baseline_corpus.py       — corpus fix (143 ops)
+  rl-coverage/level11_maxconfig/constrained_random_l11.py    — generator ponderat+hazard
+  rl-coverage/level11_maxconfig/compare_upstream.py          — script de comparatie coverage
