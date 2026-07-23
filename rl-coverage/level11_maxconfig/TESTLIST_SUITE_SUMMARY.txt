@@ -1,0 +1,132 @@
+Replicarea structurii suitei de teste lowRISC (dv/uvm/core_ibex/testlist.yaml)
+==============================================================================
+(generat 2026-07-22, continuare directa a UPSTREAM_COMPARISON_SUMMARY.txt)
+
+1. CE S-A CERUT
+----------------
+Sa rulam ceva structural similar cu suita reala de teste a lowRISC (57 de teste
+numite in dv/uvm/core_ibex/riscv_dv_extension/testlist.yaml) pe RTL-ul vendorizat
+proaspat (commit 8ed87e07), ca sa obtinem un procent de coverage la nivel de
+SUITA, nu doar de un singur corpus ad-hoc.
+
+2. DE CE NU AM VENDORIZAT riscv-dv/pygen (verificat live pe GitHub, nu din memorie)
+------------------------------------------------------------------------------------
+- Generatorul lor real e SystemVerilog/UVM si are nevoie de un simulator LICENTIAT
+  (VCS/Xcelium/Questa/Riviera-PRO) chiar si doar pentru PASUL DE GENERARE a
+  instructiunilor (confirmat din README-ul riscv-dv: "you need an RTL simulator
+  which supports SystemVerilog and UVM 1.2").
+- pygen/ (reimplementarea lor pura in Python) nu are nevoie de simulator, dar
+  scrie fisiere .S de assembly complet (label-uri, directive, pseudo-instructiuni)
+  si e marcat explicit experimental/incomplet. Proiectul asta NU are niciun
+  assembler/toolchain RISC-V vendorizat nicaieri (verificat prin grep pe tot
+  repo-ul) — fiecare nivel de aici codifica direct cuvinte-masina in Python
+  (codec_l10.py/codec_l11.py). A consuma output-ul .S al pygen ar fi insemnat sa
+  construim de la zero un bridge assembler peste un tool recunoscut ca incomplet.
+- Decizie: NU vendorizam riscv-dv/pygen. In schimb, replicam PLANUL de teste —
+  numele/categoriile/intentia de stimul a celor 57 de teste — ca si configuratie
+  pentru generatorul Python propriu (constrained_random_l11.py), care oricum
+  mimeaza STRATEGIA riscv-dv (nu codul lor), asa cum spune propriul docstring.
+
+3. MAPARE 57 TESTE LOWRISC -> PROFILURI PROPRII (rl-coverage/level11_maxconfig/testlist_l11.py)
+------------------------------------------------------------------------------------------------
+16 profiluri portabile/partiale (3 dintre ele reprezinta cate un GRUP de teste
+lowRISC, deci acopera efectiv mai mult de 16 nume):
+
+  PORTABILE (mix de instructiuni ponderat, fara nevoie de infrastructura extra):
+    riscv_arithmetic_basic_test, riscv_machine_mode_rand_test, riscv_rand_instr_test,
+    riscv_rand_jump_test, riscv_jump_stress_test, riscv_loop_test,
+    riscv_mmu_stress_test, riscv_illegal_instr_test, riscv_hint_instr_test,
+    riscv_csr_test (sweep determinist, nu random), riscv_unaligned_load_store_test,
+    riscv_rv32im_instr_test, riscv_bitmanip_full_test (reprezinta si
+    _otearlgrey_test/_balanced_test — RTL-ul nostru are UN singur parametru RV32B
+    fix, nu unul per test).
+
+  PARTIALE / best-effort (marcate explicit non-arhitecturale in cod):
+    riscv_pmp_suite_test — reprezinta riscv_pmp_basic/_disable_all_regions/
+      _out_of_bounds/_full_random/_region_exec_test + riscv_epmp_mml/
+      _mml_execute_only/_mml_read_only/_mmwp/_rlb_test (10 teste lowRISC).
+      CSR-uri ponderate spre pmpcfg/pmpaddr — exercita doar TOGGLE coverage pe
+      comparatoarele PMP, NU verifica fault-correctness (nu avem Spike).
+    riscv_invalid_csr_test — CSR-uri catre adrese pe care Ibex nu le implementeaza
+      (F/D, user-trap, supervisor), listate curat dupa ratiune de extensie/mod,
+      nu verificate bit-cu-bit fata de ibex_cs_registers.sv.
+    riscv_user_mode_rand_test — EXPERIMENTAL, prioritate scazuta: nu exista un
+      prolog directionat mstatus.MPP+MRET; acelasi tip de idee ca prologul PMP
+      adaugat in a2bc7d3 si revertit in c430fa4 — dar acel revert era despre
+      env_l11.py (mediul de RL training), un tool cu alt scop; nu blocheaza un
+      prolog directionat AICI, doar semnaleaza ca cel mai apropiat precedent a
+      fost anulat o data.
+
+  SKIPPED (30 nume lowRISC), grupate pe motiv:
+    - 11 teste riscv_debug_*/riscv_dret_test: au nevoie de un modul de debug care
+      sa conduca debug_req_i — nu exista in acest testbench.
+    - 3 teste debug+irq combinate + 6 teste de interrupt: au nevoie de un agent
+      de intreruperi randomizat — nu exista.
+    - riscv_mem_error_test / riscv_mem_intg_error_test: injectare de erori pe
+      interfata de memorie — nu implementata.
+    - riscv_reset_test: reset la mijlocul programului — fluxul cocotb curent nu
+      suporta asta.
+    - 5 teste *_intg_test (PC/RF/RF_addr/RAM/icache): injectare de coruptie prin
+      force/release pe semnale interne via cocotb — nu implementata.
+    - riscv_ebreak_test: EBREAK apare deja incidental in categoria "system" din
+      orice profil; un profil dedicat n-ar adauga nimic fara Spike sa verifice
+      corectitudinea exceptiei.
+    - riscv_umode_tw_test: are nevoie de intrare reala in U-mode + mstatus.tw +
+      verificare WFI-trapeaza-la-M-mode — dincolo de ce incearca chiar si
+      profilul best-effort riscv_user_mode_rand_test.
+
+4. REZULTATE (Verilator, config "opentitan" exact, RTL vendorizat 8ed87e07)
+------------------------------------------------------------------------------
+16 rulari (una per profil), coverage agregat prin UNIUNEA punctelor atinse in
+oricare rulare (exact cum lowRISC agrega coverage pe cele 1530 de rulari ale lor):
+
+    toggle : 27373/38696  (70.74%)   [vs 66.94% pe corpusul fix unic dinainte]
+    branch :   602/896    (67.19%)
+    line   :   908/1807   (50.25%)
+
+Comparatie cu raportul oficial lowRISC (Xcelium + UVM + riscv-dv + Spike, acelasi
+commit 8ed87e07):
+    toggle: 90.0%  (delta -19.26pp)
+    branch: 89.0%  (delta -21.81pp)
+    statement: 94.9%  (delta -44.65pp, metrica "line" a Verilator nu e identica
+                       cu "statement", comparatie doar orientativa)
+
+Contributia per test (puncte NOI la momentul rularii, ordine alfabetica dupa
+glob — riscv_arithmetic_basic_test a rulat primul si a acoperit majoritatea
+punctelor comune tuturor profilurilor; ordinea reflecta ordinea glob, NU o
+ierarhie de importanta):
+    riscv_arithmetic_basic_test: +24443 toggle (marea majoritate — mix generalist,
+      rulat primul)
+    riscv_bitmanip_full_test: +1081 toggle (ops de bitmanip nevazute de celelalte)
+    riscv_pmp_suite_test: +474 toggle (comparatoare PMP)
+    riscv_hint_instr_test: +494 toggle
+    riscv_mmu_stress_test: +339 toggle
+    riscv_illegal_instr_test: +273 toggle
+    riscv_csr_test: +233 toggle
+    riscv_invalid_csr_test: +33 toggle
+    riscv_loop_test: +3 toggle, +4 branch, +9 line
+    restul (rand_instr, rand_jump, jump_stress, machine_mode_rand, rv32im,
+      unaligned_load_store, user_mode_rand): 0 puncte noi de toggle — coverage-ul
+      lor se suprapune complet cu ce a acoperit deja arithmetic_basic_test +
+      celelalte rulate inaintea lor in ordinea alfabetica.
+
+5. DE CE NU SUNT COMPARABILE DIRECT CU 90%/89%/94.9% AL LOWRISC
+------------------------------------------------------------------------------
+(identic cu UPSTREAM_COMPARISON_SUMMARY.txt, repetat aici pentru ca acest
+rezultat nou e inca supus acelorasi limitari)
+  - Simulator diferit: Verilator vs Cadence Xcelium — algoritmi diferiti de
+    instrumentare a toggle coverage chiar pe RTL/parametri identici.
+  - Fara co-simulare Spike: instructiunile executa, dar nimic nu verifica ca
+    starea arhitecturala rezultata e CORECTA, doar ca logica a comutat.
+  - Fara modul de debug / agent de intreruperi in acest testbench: 30 din cele
+    57 de teste testlist.yaml sunt complet skip-uite, iar cateva din cele 16
+    profiluri ramase sunt explicit partiale/best-effort (nu arhitecturale).
+  - 16 rulari aici, nu 1530 (49 categorii x seed-uri randomizate) ale lor.
+
+6. FISIERE RELEVANTE
+------------------------------------------------------------------------------
+  rl-coverage/level11_maxconfig/testlist_l11.py         — PROFILES + SKIPPED (57 nume mapate)
+  rl-coverage/level11_maxconfig/gen_testlist_corpora.py — genereaza corpus_suite_*.json
+  cpu/run_testlist_suite.sh                             — ruleaza toate profilurile pe Vtop
+  rl-coverage/level11_maxconfig/aggregate_suite_coverage.py — uniune coverage + raport final
+  cpu/coverage_suite_*.dat                              — coverage brut per profil (gitignored)

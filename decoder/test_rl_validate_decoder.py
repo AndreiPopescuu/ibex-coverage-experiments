@@ -164,62 +164,66 @@ async def rl_validation_decoder(dut):
             cov.illegal_count += 1
             return
 
-        rf_we      = int(dut.u_decoder.rf_we_o.value)
-        rf_ren_a   = int(dut.u_decoder.rf_ren_a_o.value)
-        rf_ren_b   = int(dut.u_decoder.rf_ren_b_o.value)
-        rf_raddr_a = int(dut.u_decoder.rf_raddr_a_o.value)
-        rf_raddr_b = int(dut.u_decoder.rf_raddr_b_o.value)
-        rf_waddr   = int(dut.u_decoder.rf_waddr_o.value)
-        data_req   = int(dut.u_decoder.data_req_o.value)
-        data_we    = int(dut.u_decoder.data_we_o.value)
-        data_type  = int(dut.u_decoder.data_type_o.value)
-        op_b_mux   = int(dut.u_decoder.alu_op_b_mux_sel_o.value)
-        op_a_mux   = int(dut.u_decoder.alu_op_a_mux_sel_o.value)
-        rf_wdata_sel = int(dut.u_decoder.rf_wdata_sel_o.value)
-        mult_sel   = int(dut.u_decoder.mult_sel_o.value)
-        div_sel    = int(dut.u_decoder.div_sel_o.value)
-        alu_op_val = int(dut.u_decoder.alu_operator_o.value)
+        rf_we      = int(dut.u_decoder.rf_we_o.value)      # 1 daca instructiunea scrie un registru (R-type, I-type, load)
+        rf_ren_a   = int(dut.u_decoder.rf_ren_a_o.value)   # 1 daca instructiunea citeste rs1
+        rf_ren_b   = int(dut.u_decoder.rf_ren_b_o.value)   # 1 daca instructiunea citeste rs2
+        rf_raddr_a = int(dut.u_decoder.rf_raddr_a_o.value) # adresa registrului rs1 (0-31)
+        rf_raddr_b = int(dut.u_decoder.rf_raddr_b_o.value) # adresa registrului rs2 (0-31)
+        rf_waddr   = int(dut.u_decoder.rf_waddr_o.value)   # adresa registrului rd (0-31)
+        data_req   = int(dut.u_decoder.data_req_o.value)   # 1 daca instructiunea acceseaza memoria (load/store)
+        data_we    = int(dut.u_decoder.data_we_o.value)    # 1=store (scriere in memorie), 0=load (citire din memorie)
+        data_type  = int(dut.u_decoder.data_type_o.value)  # dimensiunea accesului: 0=word(32b), 1=half-word(16b), 2=byte(8b)
+        op_b_mux   = int(dut.u_decoder.alu_op_b_mux_sel_o.value)  # sursa operandului B al ALU: 0=registru(R-type), 1=imediat(I-type)
+        op_a_mux   = int(dut.u_decoder.alu_op_a_mux_sel_o.value)  # sursa operandului A al ALU: 0=registru, altceva=PC
+        rf_wdata_sel = int(dut.u_decoder.rf_wdata_sel_o.value)    # ce se scrie in rd: 0=rezultatul ALU, altceva=date din memorie
+        mult_sel   = int(dut.u_decoder.mult_sel_o.value)   # 1 daca instructiunea este MUL (extensia M)
+        div_sel    = int(dut.u_decoder.div_sel_o.value)    # 1 daca instructiunea este DIV (extensia M)
+        alu_op_val = int(dut.u_decoder.alu_operator_o.value)  # codul operatiei ALU (0=ADD, 1=SUB, 2=XOR etc. din ibex_pkg.sv)
 
-        rs1 = rf_raddr_a if rf_ren_a else None
-        rs2 = rf_raddr_b if rf_ren_b else None
-        rd  = rf_waddr   if rf_we    else None
+        # Extragem registrele doar daca instructiunea le foloseste efectiv
+        rs1 = rf_raddr_a if rf_ren_a else None  # rs1 valid doar daca rf_ren_a=1
+        rs2 = rf_raddr_b if rf_ren_b else None  # rs2 valid doar daca rf_ren_b=1
+        rd  = rf_waddr   if rf_we    else None  # rd valid doar daca rf_we=1 (instructiunea scrie)
 
-        if rs1 is not None: cov.read_reg_a[rs1] += 1
-        if rs2 is not None: cov.read_reg_b[rs2] += 1
+        # Marcam registrele citite (bin-urile Type 2: read_A_reg_i, read_B_reg_i)
+        if rs1 is not None: cov.read_reg_a[rs1] += 1  # rs1 a fost citit -> bin read_A_reg_{rs1}
+        if rs2 is not None: cov.read_reg_b[rs2] += 1  # rs2 a fost citit -> bin read_B_reg_{rs2}
 
         size_map = {0: "word", 1: "half-word", 2: "byte"}
         alu_name_map = {0:"add",1:"sub",2:"xor",3:"or",4:"and",
                         8:"sra",9:"srl",10:"sll",43:"slt",44:"sltu"}
 
-        if data_req:
-            sz = size_map.get(data_type)
+        if data_req:  # instructiunea acceseaza memoria -> e load sau store
+            sz = size_map.get(data_type)  # dimensiunea: word/half-word/byte
             if sz:
-                if data_we:
-                    cov.store_ops[sz] += 1
-                    if rs1 is not None: cov.store_x_ra[sz][rs1] += 1
-                    if rs2 is not None: cov.store_x_rb[sz][rs2] += 1
-                else:
-                    rd = rf_waddr
-                    cov.write_reg[rd] += 1
-                    cov.load_ops[sz] += 1
-                    if rs1 is not None: cov.load_x_ra[sz][rs1] += 1
-                    cov.load_x_wr[sz][rd] += 1
-            return
+                if data_we:  # data_we=1 -> store (scriem in memorie)
+                    cov.store_ops[sz] += 1                          # bin Type 1: S{W/H/B}
+                    if rs1 is not None: cov.store_x_ra[sz][rs1] += 1  # bin Type 3: S{W/H/B}_x_read_A_reg_{rs1}
+                    if rs2 is not None: cov.store_x_rb[sz][rs2] += 1  # bin Type 3: S{W/H/B}_x_read_B_reg_{rs2}
+                else:  # data_we=0 -> load (citim din memorie)
+                    rd = rf_waddr                                    # load-ul scrie intotdeauna in rd
+                    cov.write_reg[rd] += 1                          # bin Type 2: write_reg_{rd}
+                    cov.load_ops[sz] += 1                           # bin Type 1: L{W/H/B}
+                    if rs1 is not None: cov.load_x_ra[sz][rs1] += 1   # bin Type 3: L{W/H/B}_x_read_A_reg_{rs1}
+                    cov.load_x_wr[sz][rd] += 1                     # bin Type 3: L{W/H/B}_x_write_reg_{rd}
+            return  # load/store tratat complet, iesim din apply()
 
-        if rd is not None: cov.write_reg[rd] += 1
+        if rd is not None: cov.write_reg[rd] += 1  # instructiunea ALU scrie in rd -> bin write_reg_{rd}
 
-        alu_name = alu_name_map.get(alu_op_val)
+        alu_name = alu_name_map.get(alu_op_val)  # traducem codul numeric ALU in nume: 0 -> "add"
+        # Verificam ca e o instructiune ALU pura (nu MUL/DIV, nu branch, operandul A vine din registru,
+        # rezultatul merge direct in rd) - filtru necesar ca alu_op_val e setat si pentru load/store
         if alu_name and rf_we and not mult_sel and not div_sel and rf_ren_a \
                 and op_a_mux == 0 and rf_wdata_sel == 0:
-            if op_b_mux == 1:  # immediate
-                cov.alu_imm_ops[alu_name] += 1
-                if rs1 is not None: cov.imm_x_ra[alu_name][rs1] += 1
-                if rd  is not None: cov.imm_x_wr[alu_name][rd]  += 1
-            else:
-                cov.alu_ops[alu_name] += 1
-                if rs1 is not None: cov.alu_x_ra[alu_name][rs1] += 1
-                if rs2 is not None: cov.alu_x_rb[alu_name][rs2] += 1
-                if rd  is not None: cov.alu_x_wr[alu_name][rd]  += 1
+            if op_b_mux == 1:  # op_b_mux=1 -> operandul B e imediat -> instructiune I-type (ADDI, XORI etc.)
+                cov.alu_imm_ops[alu_name] += 1                         # bin Type 1: ALUI_{op}I
+                if rs1 is not None: cov.imm_x_ra[alu_name][rs1] += 1  # bin Type 3: {op}I_x_read_A_reg_{rs1}
+                if rd  is not None: cov.imm_x_wr[alu_name][rd]  += 1  # bin Type 3: {op}I_x_write_reg_{rd}
+            else:  # op_b_mux=0 -> operandul B e registru -> instructiune R-type (ADD, XOR etc.)
+                cov.alu_ops[alu_name] += 1                             # bin Type 1: ALU_{op}
+                if rs1 is not None: cov.alu_x_ra[alu_name][rs1] += 1  # bin Type 3: {op}_x_read_A_reg_{rs1}
+                if rs2 is not None: cov.alu_x_rb[alu_name][rs2] += 1  # bin Type 3: {op}_x_read_B_reg_{rs2}
+                if rd  is not None: cov.alu_x_wr[alu_name][rd]  += 1  # bin Type 3: {op}_x_write_reg_{rd}
 
     for word in program:
         await apply(word)

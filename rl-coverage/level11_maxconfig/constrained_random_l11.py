@@ -1,8 +1,14 @@
 """constrained_random_l11.py — constrained-random instruction generator for
 codec_l11 (143 ops), built to be as close in SPIRIT as practical to
-lowRISC's own riscv-dv generator (vendor/google_riscv-dv/ inside the fresh
-upstream vendor pull, see cpu/src_upstream/_UPSTREAM_PROVENANCE.txt) without
-requiring UVM/VCS/Xcelium:
+lowRISC's own riscv-dv generator, without requiring UVM/VCS/Xcelium.
+
+NOTE: riscv-dv/pygen were investigated but deliberately NOT vendored (see
+rl-coverage/level11_maxconfig/TESTLIST_SUITE_SUMMARY.txt) — the real SV/UVM
+generator needs a licensed simulator even just to generate instructions, and
+pygen (Google's pure-Python reimplementation) emits full .S assembly text
+that this project has no assembler to consume (every level here encodes raw
+machine-code words directly in Python instead). So this file re-implements
+their generation STRATEGY, not their code:
 
   - Weighted op-category selection, mirroring the `dist{}` weighted-random
     philosophy in vendor/google_riscv-dv/src/riscv_instr_gen_config.sv
@@ -75,10 +81,10 @@ P_ZERO     = 0.08   # probability a register field is forced to x0
 P_SAME_SRC = 0.08   # probability rs2 is forced equal to rs1
 
 
-def _pick_reg(rng, last_rd, prefer_hazard):
-    if prefer_hazard and last_rd is not None and rng.random() < P_HAZARD:
+def _pick_reg(rng, last_rd, prefer_hazard, p_hazard, p_zero):
+    if prefer_hazard and last_rd is not None and rng.random() < p_hazard:
         return last_rd
-    if rng.random() < P_ZERO:
+    if rng.random() < p_zero:
         return 0
     return int(rng.integers(1, 32))
 
@@ -91,16 +97,27 @@ def _pick_bucket(rng, n):
     return int(rng.integers(0, n))
 
 
-def sample_action(rng, last_rd):
-    cat = rng.choice(list(CATEGORY_WEIGHTS.keys()), p=list(CATEGORY_WEIGHTS.values()))
-    op = int(rng.choice(CATEGORIES[cat]))
+def sample_action(rng, last_rd, category_weights=None, categories=None,
+                   p_hazard=P_HAZARD, p_zero=P_ZERO, p_same_src=P_SAME_SRC):
+    """Sample one (op, rd, rs1, rs2, imm_bucket, csr_bucket) action.
 
-    rd = _pick_reg(rng, last_rd, prefer_hazard=False)
-    rs1 = _pick_reg(rng, last_rd, prefer_hazard=True)
-    if rng.random() < P_SAME_SRC:
+    category_weights/categories default to the module-level CATEGORY_WEIGHTS/
+    CATEGORIES so existing callers are unaffected; testlist_l11.py passes
+    per-test-profile overrides of category_weights to reshape the op mix
+    without duplicating this sampling logic.
+    """
+    category_weights = category_weights if category_weights is not None else CATEGORY_WEIGHTS
+    categories = categories if categories is not None else CATEGORIES
+
+    cat = rng.choice(list(category_weights.keys()), p=list(category_weights.values()))
+    op = int(rng.choice(categories[cat]))
+
+    rd = _pick_reg(rng, last_rd, prefer_hazard=False, p_hazard=p_hazard, p_zero=p_zero)
+    rs1 = _pick_reg(rng, last_rd, prefer_hazard=True, p_hazard=p_hazard, p_zero=p_zero)
+    if rng.random() < p_same_src:
         rs2 = rs1
     else:
-        rs2 = _pick_reg(rng, last_rd, prefer_hazard=True)
+        rs2 = _pick_reg(rng, last_rd, prefer_hazard=True, p_hazard=p_hazard, p_zero=p_zero)
 
     imm_bucket = _pick_bucket(rng, IMM_BUCKETS)
     csr_bucket = _pick_bucket(rng, N_CSR_BUCKETS)
@@ -108,12 +125,14 @@ def sample_action(rng, last_rd):
     return (op, rd, rs1, rs2, imm_bucket, csr_bucket), rd
 
 
-def build_actions(n_actions, seed):
+def build_actions(n_actions, seed, category_weights=None, categories=None,
+                   p_hazard=P_HAZARD, p_zero=P_ZERO, p_same_src=P_SAME_SRC):
     rng = np.random.default_rng(seed)
     actions = []
     last_rd = None
     for _ in range(n_actions):
-        action, rd = sample_action(rng, last_rd)
+        action, rd = sample_action(rng, last_rd, category_weights, categories,
+                                    p_hazard, p_zero, p_same_src)
         actions.append(action)
         last_rd = rd
     return actions
