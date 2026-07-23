@@ -21,6 +21,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${IBEX_VENV:-$HOME/ibex_env}/bin/activate"
 cd "$SCRIPT_DIR"
 
+# Vtop is invoked directly below (not via `make`), so it doesn't automatically
+# inherit the LD_LIBRARY_PATH cocotb's Makefiles set up for the linker to find
+# libpythonX.Y.so — matters especially when the venv's underlying interpreter
+# is an Anaconda install, whose lib dir isn't on the system's default linker
+# search path. cocotb-config reports the exact libpython path cocotb itself
+# was built against, so reuse that instead of guessing.
+if command -v cocotb-config >/dev/null 2>&1; then
+    export LD_LIBRARY_PATH="$(dirname "$(cocotb-config --libpython)"):${LD_LIBRARY_PATH:-}"
+fi
+
 FORCE=0
 [ "$1" = "--force" ] && FORCE=1
 
