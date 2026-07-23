@@ -17,13 +17,14 @@
 # Then: python3 ../rl-coverage/level11_maxconfig/aggregate_suite_coverage.py
 #       (safe to run at any time, including mid-suite — it unions whatever
 #       coverage_suite_*.dat files exist so far)
-source /home/andrei/ibex_env/bin/activate
-cd /home/andrei/IBEX/ibex-coverage-experiments/cpu
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${IBEX_VENV:-$HOME/ibex_env}/bin/activate"
+cd "$SCRIPT_DIR"
 
 FORCE=0
 [ "$1" = "--force" ] && FORCE=1
 
-CORPUS_DIR=/home/andrei/IBEX/ibex-coverage-experiments/rl-coverage/level11_maxconfig
+CORPUS_DIR="$SCRIPT_DIR/../rl-coverage/level11_maxconfig"
 SIM_BUILD=./sim_build_opentitan_upstream
 
 if [ ! -x "$SIM_BUILD/Vtop" ]; then

@@ -4,8 +4,9 @@
 # in-progress run_testlist_suite.sh — .dat files only appear once a test fully
 # finishes, never partially-written). Exits once "Suite run complete" shows up
 # in _suite_run.log.
-source /home/andrei/ibex_env/bin/activate
-REPO=/home/andrei/IBEX/ibex-coverage-experiments
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "${IBEX_VENV:-$HOME/ibex_env}/bin/activate"
 LOG="$REPO/rl-coverage/level11_maxconfig/_suite_run.log"
 TOTAL=$(ls "$REPO/rl-coverage/level11_maxconfig"/corpus_suite_*.json 2>/dev/null | wc -l)
 

@@ -21,9 +21,9 @@
 # Usage (from anywhere, this cds internally):
 #   bash rl-coverage/level11_maxconfig/run_multiseed_experiment.sh
 set -e
-source /home/andrei/ibex_env/bin/activate
-
-REPO=/home/andrei/IBEX/ibex-coverage-experiments
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "${IBEX_VENV:-$HOME/ibex_env}/bin/activate"
 
 cd "$REPO/rl-coverage/level11_maxconfig"
 echo "=== Regenerating corpora: 3 seeds/profile (deterministic profiles stay at 1) ==="

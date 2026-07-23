@@ -12,7 +12,8 @@
 #   bash run_scaled_upstream_suite.sh            # fresh run: regenerate corpora, wipe old .dat, truncate log
 #   bash run_scaled_upstream_suite.sh --resume    # keep existing corpora/.dat/log, just continue the suite
 set -e
-REPO=/home/andrei/IBEX/ibex-coverage-experiments
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG="$REPO/rl-coverage/level11_maxconfig/_suite_run.log"
 
 if [ "$1" = "--resume" ]; then
@@ -22,7 +23,7 @@ if [ "$1" = "--resume" ]; then
 else
     exec > "$LOG" 2>&1
 fi
-source /home/andrei/ibex_env/bin/activate
+source "${IBEX_VENV:-$HOME/ibex_env}/bin/activate"
 
 cd "$REPO/rl-coverage/level11_maxconfig"
 if [ "$1" != "--resume" ]; then
