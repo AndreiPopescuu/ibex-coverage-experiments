@@ -47,6 +47,12 @@ try:
 except ImportError:
     _RECURRENT_AVAILABLE = False
 
+try:
+    from sb3_contrib import MaskablePPO
+    _MASKABLE_AVAILABLE = True
+except ImportError:
+    _MASKABLE_AVAILABLE = False
+
 # ── Checkpoint paths (per-phase, sau generic pentru rulari fara --phase) ──────
 def _ckpt_paths(phase: int | None):
     tag = f"p{phase}_" if phase else ""
@@ -200,11 +206,29 @@ def main():
     ap.add_argument("--recurrent", action="store_true",
                     help="Folosește RecurrentPPO (LSTM) din sb3-contrib în loc de PPO (MLP). "
                          "Permite coordonarea secvențelor multi-pas (ex: PMP setup → access).")
+    ap.add_argument("--action-mask", action="store_true",
+                    help="Folosește MaskablePPO (sb3-contrib): maschează op-urile ale căror "
+                         "module RTL țintă (OP_MODULES în env_l11.py) sunt deja saturate "
+                         "(>= --mask-saturation), forțând agentul spre module slab acoperite. "
+                         "Doar dimensiunea 'op' e mascată — rd/rs1/rs2/imm/csr rămân libere. "
+                         "Nu poate fi combinat cu --recurrent.")
+    ap.add_argument("--mask-saturation", type=float, default=0.97,
+                    help="Prag de acoperire per modul peste care un op devine candidat la "
+                         "mascare, dacă TOATE modulele lui țintă sunt peste prag (default 0.97)")
+    ap.add_argument("--mask-min-unmasked-frac", type=float, default=0.15,
+                    help="Fracție minimă de op-uri care trebuie să rămână nemascate; sub asta "
+                         "masking-ul se dezactivează pentru acel pas (anti-starvare, default 0.15)")
     ap.add_argument("--pretrained-model", default=None,
                     help="Încarcă weights dintr-un model existent dar resetează hits (fresh coverage)")
     ap.add_argument("--corpus-out", default="corpus_l11.json",
                     help="Fișier JSON pentru episoadele cu bins noi (append dacă există)")
     args = ap.parse_args()
+
+    if args.action_mask and args.recurrent:
+        ap.error("--action-mask și --recurrent nu pot fi combinate "
+                 "(sb3-contrib nu are un MaskableRecurrentPPO).")
+    if args.action_mask and not _MASKABLE_AVAILABLE:
+        ap.error("--action-mask cere sb3-contrib. Instalează cu: pip install sb3-contrib")
 
     max_ops = PHASE_MAX_OPS[args.phase] if args.phase else N_OPS
     CKPT_MODEL, CKPT_HITS, CKPT_HISTORY = _ckpt_paths(args.phase)
@@ -257,13 +281,19 @@ def main():
           f"({'SubprocVecEnv' if args.n_envs > 1 else 'DummyVecEnv'})")
     ent_coef = args.ent_coef if args.ent_coef is not None else 0.08
     use_recurrent = args.recurrent and _RECURRENT_AVAILABLE
+    use_maskable  = args.action_mask and _MASKABLE_AVAILABLE
     if args.recurrent and not _RECURRENT_AVAILABLE:
         print("  [!] sb3-contrib nu e instalat — fallback la PPO (MLP). "
               "Instalează cu: pip install sb3-contrib")
-    algo_name = "RecurrentPPO (LSTM)" if use_recurrent else "PPO (MLP)"
+    AlgoCls   = MaskablePPO if use_maskable else (RecurrentPPO if use_recurrent else PPO)
+    algo_name = ("MaskablePPO" if use_maskable else
+                 "RecurrentPPO (LSTM)" if use_recurrent else "PPO (MLP)")
     net_desc  = "LSTM-256 + [256,256]" if use_recurrent else "[512, 256]"
     print(f"  Algoritm:        {algo_name}")
     print(f"  Net arch:        {net_desc}  ent_coef={ent_coef}")
+    if use_maskable:
+        print(f"  Action masking:  ON (dim 'op', saturation>={args.mask_saturation}, "
+              f"min unmasked frac={args.mask_min_unmasked_frac})")
     print(f"  Baseline:        {baseline_pct:.2f}%  (din {len(initial_hits):,} / ~{TOTAL_MAX:,} bins)")
     print(f"  Checkpoint:      la fiecare {args.checkpoint_every} ep → {CKPT_MODEL}.zip")
     print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'tog+':>5} {'br+':>4} | {'Δbaseline':>10} | worst module")
@@ -277,6 +307,8 @@ def main():
                 initial_hits=initial_hits,
                 timeout=args.timeout,
                 max_ops=max_ops,
+                mask_saturation=args.mask_saturation,
+                mask_min_unmasked_frac=args.mask_min_unmasked_frac,
             )
         return _init
 
@@ -292,11 +324,15 @@ def main():
 
     model = None
 
-    AlgoCls = RecurrentPPO if use_recurrent else PPO
-
     if args.resume and CKPT_MODEL.with_suffix(".zip").exists():
         try:
-            model = AlgoCls.load(str(CKPT_MODEL), env=env, device="cpu")
+            # n_steps=args.steps suprascrie valoarea salvată în checkpoint —
+            # necesar pentru schedule-ul de lungime episod (rulezi acest
+            # script de mai multe ori cu --steps crescând, fiecare cu
+            # --resume; fără suprascriere, rollout buffer-ul ar rămâne la
+            # lungimea din prima rulare, ignorând noul --steps).
+            model = AlgoCls.load(str(CKPT_MODEL), env=env, device="cpu",
+                                  n_steps=args.steps)
             if args.ent_coef is not None:
                 model.ent_coef = args.ent_coef
             print(f"  Model încărcat din {CKPT_MODEL}.zip")
@@ -309,7 +345,8 @@ def main():
             src = src.with_suffix(".zip")
         if src.exists():
             try:
-                model = AlgoCls.load(str(src.with_suffix("")), env=env, device="cpu")
+                model = AlgoCls.load(str(src.with_suffix("")), env=env, device="cpu",
+                                      n_steps=args.steps)
                 if args.ent_coef is not None:
                     model.ent_coef = args.ent_coef
                 print(f"  Weights încărcate din {src} — hits resetate (fresh coverage)")
@@ -334,6 +371,18 @@ def main():
                     lstm_hidden_size=256,
                     enable_critic_lstm=True,
                 ),
+                verbose=0, seed=args.seed, device="cpu",
+            )
+        elif use_maskable:
+            model = MaskablePPO(
+                "MlpPolicy", env,
+                learning_rate=3e-4,
+                n_steps=args.steps,
+                batch_size=64,
+                n_epochs=4,
+                gamma=0.999,
+                ent_coef=ent_coef,
+                policy_kwargs=dict(net_arch=[512, 256]),
                 verbose=0, seed=args.seed, device="cpu",
             )
         else:

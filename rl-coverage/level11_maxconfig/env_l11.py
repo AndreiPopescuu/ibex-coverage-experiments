@@ -60,6 +60,61 @@ N_OBS       = 3 + N_MODULES + HIST_LEN
 MAX_EP_NORM = 500.0
 BRANCH_COEF = 0.3
 
+# ── Static op -> RTL-module mapping, used only for action masking (MaskablePPO,
+# --action-mask in train_l11_ppo.py). This is a coarse, hand-built heuristic
+# from the RISC-V opcode groups in codec_l10/codec_l11 (ADD/SUB/... -> ALU,
+# LB/SW/... -> load-store, CSRRW/... -> CS registers, etc.) — NOT a claim about
+# exact toggle-bin attribution, which we can't get per-instruction (coverage is
+# only readable once per whole episode, see run_program()). Cross-cutting
+# modules (decoder, controller, id/ex/wb stage, register file, lockstep,
+# tracer, prim_*) are deliberately left unmapped: virtually every op touches
+# them, so no op choice could selectively avoid them anyway.
+_ALU_OPS = (
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+     45, 46, 47, 48, 49, 50, 51, 54, 55, 56, 57, 58, 59, 60, 61, 64, 77}
+    | set(range(87, N_OPS))  # all RV32B Zba/Zbb/Zbs/zbp/zbc/zbe/zbf route through the ALU
+)
+_MEM_OPS    = {19, 20, 21, 22, 23, 24, 25, 26, 52, 53, 78, 79, 84, 85, 86}
+_CSR_OPS    = {27, 28, 29, 66, 67, 68}
+_MULDIV_OPS = {30, 31, 32, 33, 34, 35, 36, 37}
+_BRANCH_OPS = {38, 39, 40, 41, 42, 43, 75, 76}
+_RVC_OPS    = {45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+               73, 74, 75, 76, 77, 78, 79, 80, 81, 82}
+_ICACHE_OPS = {72}  # FENCE_I
+
+
+def _build_op_modules() -> dict[int, tuple[str, ...]]:
+    out: dict[int, tuple[str, ...]] = {}
+    for op in range(N_OPS):
+        mods: set[str] = set()
+        if op in _ALU_OPS:
+            mods.add("ibex_alu")
+        if op in _MEM_OPS:
+            mods.update(("ibex_load_store_unit", "ibex_pmp"))
+        if op in _CSR_OPS:
+            # CSR writes are the only path to pmpcfg/pmpaddr and to
+            # cpuctrl/secureseed (dummy_instr config) -> tag all four; an op
+            # only gets masked once ALL of its tagged modules saturate, so
+            # CSR ops stay available as long as any one of these lags.
+            mods.update(("ibex_cs_registers", "ibex_csr",
+                         "ibex_pmp", "ibex_dummy_instr"))
+        if op in _MULDIV_OPS:
+            mods.add("ibex_multdiv_fast")
+        if op in _BRANCH_OPS:
+            mods.add("ibex_branch_predict")
+        if op in _RVC_OPS:
+            mods.add("ibex_compressed_decoder")
+        if op in _ICACHE_OPS:
+            mods.add("ibex_icache")
+        out[op] = tuple(mods)
+    return out
+
+
+OP_MODULES: dict[int, tuple[str, ...]] = _build_op_modules()
+
+MASK_SATURATION_DEFAULT = 0.97
+MASK_MIN_UNMASKED_FRAC  = 0.15
+
 _F_RE     = re.compile(r"\x01f\x02[^\x01]+")
 _N_RE     = re.compile(r"\x01n\x02[^\x01]+")
 _H_DOT_RE = re.compile(r"(\x01h\x02)\.")
@@ -112,7 +167,9 @@ class IbexL11Env(gym.Env):
 
     def __init__(self, episode_steps: int = 256, seed: int | None = None,
                  initial_hits: set | None = None, timeout: int = 600,
-                 max_ops: int = N_OPS):
+                 max_ops: int = N_OPS,
+                 mask_saturation: float = MASK_SATURATION_DEFAULT,
+                 mask_min_unmasked_frac: float = MASK_MIN_UNMASKED_FRAC):
         super().__init__()
         if not VTOP.exists():
             raise FileNotFoundError(
@@ -122,6 +179,8 @@ class IbexL11Env(gym.Env):
         self.episode_steps = episode_steps
         self._timeout = timeout
         self._max_ops = max(1, min(max_ops, N_OPS))
+        self._mask_saturation   = mask_saturation
+        self._mask_min_unmasked = max(1, int(mask_min_unmasked_frac * self._max_ops))
 
         # Path-uri unice per proces — esential pentru rulare paralela (SubprocVecEnv):
         # fara asta, mai multe instante ar scrie in acelasi /tmp/rl_l11.json si
@@ -165,6 +224,36 @@ class IbexL11Env(gym.Env):
             frac = self._mod_covered[mod] / self._mod_total[mod]
             return 1.0 / max(frac, 0.01)
         return 1.0
+
+    def action_masks(self) -> np.ndarray:
+        """Flat bool mask for sb3-contrib's MaskablePPO, concatenated across
+        all MultiDiscrete sub-spaces in order (op, rd, rs1, rs2, imm, csr) —
+        see MaskableMultiCategoricalDistribution.apply_masking(). Only the
+        `op` dimension is actually masked: an op is disallowed once every
+        module in OP_MODULES[op] is >= self._mask_saturation covered. rd/rs1/
+        rs2/imm/csr stay fully open — sb3-contrib masks each MultiDiscrete
+        sub-space independently (chosen simultaneously, not sequentially), so
+        masking e.g. csr_bucket conditionally on "op is a CSR write" isn't
+        expressible without an autoregressive policy head.
+
+        Guards against masking everything into a corner: masks are computed
+        from module totals that are only known after the first episode
+        (self._mod_total_set), and if fewer than self._mask_min_unmasked ops
+        would remain, masking is skipped for that step entirely.
+        """
+        op_mask = np.ones(self._max_ops, dtype=bool)
+        if self._mod_total_set:
+            for op in range(self._max_ops):
+                mods = OP_MODULES.get(op, ())
+                if not mods:
+                    continue
+                if all(self._mod_covered[m] / max(self._mod_total[m], 1)
+                       >= self._mask_saturation for m in mods):
+                    op_mask[op] = False
+            if op_mask.sum() < self._mask_min_unmasked:
+                op_mask[:] = True
+        rest_dims = int(sum(self.action_space.nvec[1:]))
+        return np.concatenate([op_mask, np.ones(rest_dims, dtype=bool)])
 
     def _obs(self) -> np.ndarray:
         step_frac = self._step_idx / self.episode_steps
