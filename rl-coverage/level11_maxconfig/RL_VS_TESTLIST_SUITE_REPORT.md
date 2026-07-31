@@ -186,7 +186,33 @@ problema nu e cantitatea, e direcția explorării.
    și configurațiile PMP ar avea șanse mai mari să închidă golul rămas,
    mult mai eficient decât a mai aștepta.
 
-## 8. Fișiere relevante
+## 8. Pași următori (to-do)
+
+1. **Strategie RL direcționată ("crRL")** — crt câștigă (ușor) la buget egal
+   pentru că profilurile lui sunt scrise manual, cu cunoștințe de domeniu,
+   direcționate spre colțuri greu de nimerit random (illegal-instr,
+   invalid-CSR, PMP full-random, CSR sweep determinist). RL explorează
+   nedirecționat. De discutat/încercat:
+   - Bonus de reward suplimentar, direcționat explicit spre cele 4 module
+     unde RL rămâne în urmă (`ibex_counter`, `ibex_core`,
+     `ibex_cs_registers`, `ibex_pmp` — 85% din gol, vezi §5).
+   - O fază de curriculum suplimentară care la un moment dat restrânge/
+     preferă explicit CSR-uri de performance-counter și configurații PMP.
+   - Posibil un "warm-start": pre-antrenare scurtă pe un mini-corpus generat
+     cu bias spre acele zone, înainte de RL propriu-zis.
+   - De verificat dacă action masking-ul poate fi extins să nu doar
+     mascheze module saturate, ci să **favorizeze** explicit modulele slabe.
+2. **Rulare extinsă a suitei (crt) la buget egal cu RL (~480K instrucțiuni,
+   518 teste, 438 din ele `riscv_pmp_suite_test`)** — pornită, oprită la
+   final de zi, de reluat: `nohup bash run_testlist_suite_parallel.sh 24 >
+   suite_extended_run.log 2>&1 &` din `cpu/` (resumabilă, sare peste testele
+   deja terminate).
+3. De adăugat în raport, când suita extinsă termină: comparația finală la
+   buget egal extins (RL ~83.27%+ vs crt extins), plus comparația la bugetul
+   *original* al suitei (139.406 instrucțiuni — RL la acel punct, ~ep1073,
+   era la ~81.37%, deci crt câștigă cu ~2pp la bugetul lui natural).
+
+## 9. Fișiere relevante
 
 - `rl-coverage/level11_maxconfig/env_l11.py` — mediul Gymnasium (build selection, reward, masking)
 - `rl-coverage/level11_maxconfig/train_l11_ppo.py` — scriptul de antrenare
