@@ -17,6 +17,27 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
+def _cocotb_libpython_dir() -> str | None:
+    """Dir containing libpythonX.Y.so that cocotb's gpi was built against —
+    matches cpu/run_testlist_suite.sh's `cocotb-config --libpython` lookup.
+    Needed because guessing /usr/lib/x86_64-linux-gnu (the old fallback here)
+    silently breaks on any non-system-Python venv (e.g. a venv layered on
+    Anaconda/Miniconda, whose libpython lives under the conda install dir):
+    gpi fails to dlopen it, so the embedded Python side of the test
+    (test_run_for_l8.py, which actually injects the RL program) never runs —
+    but Verilator still reaches $finish and dumps a "no test ran" coverage
+    snapshot with returncode 0, silently identical on every call regardless
+    of the program fed in.
+    """
+    try:
+        libpython = subprocess.check_output(
+            ["cocotb-config", "--libpython"], text=True).strip()
+        return os.path.dirname(libpython)
+    except Exception:
+        return None
+
+_COCOTB_LIBPYTHON_DIR = _cocotb_libpython_dir()
+
 THIS   = Path(__file__).resolve().parent
 L5     = (THIS.parent / "level5_real_rtl").resolve()
 L10    = (THIS.parent / "level10_ops").resolve()
@@ -160,7 +181,8 @@ def run_program(actions, program_json: str, covdat: Path, timeout: int = 600,
     site_packages = sysconfig.get_paths()["purelib"]
     cocotb_libs = os.path.join(site_packages, "cocotb", "libs")
     env["LD_LIBRARY_PATH"] = (
-        cocotb_libs + ":/usr/lib/x86_64-linux-gnu"
+        (_COCOTB_LIBPYTHON_DIR + ":" if _COCOTB_LIBPYTHON_DIR else "")
+        + cocotb_libs + ":/usr/lib/x86_64-linux-gnu"
         + ":" + env.get("LD_LIBRARY_PATH", "")
     )
     env["PYTHONPATH"] = (
