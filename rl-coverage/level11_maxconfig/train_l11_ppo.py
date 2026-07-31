@@ -396,7 +396,13 @@ def main():
                 n_epochs=4,
                 gamma=0.999,
                 ent_coef=ent_coef,
-                policy_kwargs=dict(net_arch=[512, 256]),
+                # dict form -> separate pi/vf trunks (not a shared [512,256]
+                # backbone): the reward here can spike into the thousands on
+                # early episodes (dynamic per-module weighting), and a shared
+                # trunk lets that value-loss spike corrupt the policy's
+                # features via backprop, collapsing it to a near-deterministic
+                # output. Matches RecurrentPPO below, which already does this.
+                policy_kwargs=dict(net_arch=dict(pi=[512, 256], vf=[512, 256])),
                 verbose=0, seed=args.seed, device="cpu",
             )
         else:
@@ -408,7 +414,7 @@ def main():
                 n_epochs=4,
                 gamma=0.999,
                 ent_coef=ent_coef,
-                policy_kwargs=dict(net_arch=[512, 256]),
+                policy_kwargs=dict(net_arch=dict(pi=[512, 256], vf=[512, 256])),
                 verbose=0, seed=args.seed, device="cpu",
             )
 

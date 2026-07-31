@@ -74,6 +74,7 @@ HIST_LEN    = 4
 N_OBS       = 3 + N_MODULES + HIST_LEN
 MAX_EP_NORM = 500.0
 BRANCH_COEF = 0.3
+DYNAMIC_WEIGHT_CAP = 5.0
 
 # ── Static op -> RTL-module mapping, used only for action masking (MaskablePPO,
 # --action-mask in train_l11_ppo.py). This is a coarse, hand-built heuristic
@@ -239,9 +240,14 @@ class IbexL11Env(gym.Env):
                     self._mod_covered[mod] += 1
 
     def _dynamic_weight(self, mod: str | None) -> float:
+        # Capped at DYNAMIC_WEIGHT_CAP (not the raw 1/max(frac, 0.01), which
+        # allows up to 100x per hit): early episodes on a near-empty module
+        # would otherwise produce reward spikes in the thousands, and since
+        # PPO's value target scales with that, a single outlier episode can
+        # dominate several epochs of gradient updates.
         if mod and mod in self._mod_covered and self._mod_total.get(mod, 0) > 0:
             frac = self._mod_covered[mod] / self._mod_total[mod]
-            return 1.0 / max(frac, 0.01)
+            return min(DYNAMIC_WEIGHT_CAP, 1.0 / max(frac, 0.01))
         return 1.0
 
     def action_masks(self) -> np.ndarray:
