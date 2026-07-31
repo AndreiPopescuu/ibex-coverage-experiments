@@ -137,16 +137,22 @@ configurații PMP anume) necesare pentru acele bin-uri.
 
 | | Instrucțiuni |
 |---|---:|
-| Suita (171 teste, total incl. prolog) | 139.406 |
-| Suita (doar agent, fără prolog fix de 40/test) | **132.566** |
-| RL (până la ep1200, estimat) | **~170.368** |
+| Suita (doar agent — suma câmpurilor `n` din `corpus_suite_*.json`) | **139.406** |
+| Suita (total real simulat: agent + prolog 40/test + WFI 1/test) | 146.417 |
+| RL (până la ep1200, estimat, doar agent) | **~170.368** |
+
+Notă: `emit_program()` din `codec_l11.py` nu adaugă niciodată prologul —
+`"n"` din corpus e deja strict agent. Prologul (40 instrucțiuni) și `WFI`-ul
+final se adaugă separat, la rulare, de `test_run_for_l8.py`
+(`full_program = PROLOGUE + agent_machine + [WFI]`) — identic la suită și la
+RL, deci comparația corectă e agent-vs-agent (139.406 vs ~170.368).
 
 Detaliu RL (estimat din granițele etapelor de curriculum):
 - 64 pași × ~554 episoade = 35.456
 - 128 pași × ~238 episoade = 30.464
 - 256 pași × 408 episoade = 104.448
 
-**RL a folosit deja ~29% mai mult buget de instrucțiuni decât suita, și tot
+**RL a folosit deja ~22% mai mult buget de instrucțiuni decât suita, și tot
 rămâne sub coverage-ul ei** (81.40% vs 83.32%) — confirmă din nou că
 problema nu e cantitatea, e direcția explorării.
 
