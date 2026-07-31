@@ -430,15 +430,31 @@ def main():
 
     print(f"\nDone în {elapsed/60:.1f} min")
 
-    all_history = cb.history
-    if all_history:
-        best  = max(h["cum_pct"] for h in all_history)
-        final = all_history[-1]["cum_pct"]
-        print(f"\nRezultate finale:")
-        print(f"  L11 PPO best:  {best:.2f}%")
-        print(f"  L11 PPO final: {final:.2f}%")
-        print(f"  Baseline:      {baseline_pct:.2f}%")
+    # Final cross-worker merge: checkpoints only happen every
+    # --checkpoint-every episodes, so a run that stops between two of them
+    # (the common case, e.g. Ctrl+C or the curriculum wrapper's episode
+    # target) would otherwise never report the true global union — only
+    # cb.history's per-worker-local cum_pct (info["cum_pct"], scoped to
+    # whichever single worker logged that episode; see env_l11.py's
+    # _cum_hits — never synced live across workers, only merged here/at
+    # checkpoints).
+    cb._save(len(cb.history), reason="final")
+    hit_sets    = env.get_attr("_cum_hits")
+    merged_hits = set().union(*hit_sets) if hit_sets else set()
+    tot_sets    = env.get_attr("_total_tog")
+    real_total  = tot_sets[0] if tot_sets else total_bins
+    global_pct  = 100.0 * len(merged_hits) / max(real_total, 1)
 
+    all_history = cb.history
+    print(f"\nRezultate finale:")
+    print(f"  Uniune globală (toți {max(1, args.n_envs)} workerii): "
+          f"{global_pct:.2f}%  ({len(merged_hits):,} / {real_total:,} bins)")
+    if all_history:
+        best = max(h["cum_pct"] for h in all_history)
+        print(f"  Cel mai bun worker individual (local):    {best:.2f}%")
+    print(f"  Baseline:                                  {baseline_pct:.2f}%")
+
+    if all_history:
         eps    = np.array([h["ep"]      for h in all_history])
         cum    = np.array([h["cum_pct"] for h in all_history])
         ep_pct = np.array([h["ep_pct"]  for h in all_history])
