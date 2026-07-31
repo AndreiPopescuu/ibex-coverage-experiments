@@ -31,7 +31,7 @@ THIS = Path(__file__).resolve().parent
 sys.path.insert(0, str(THIS.parent / "level5_real_rtl"))
 sys.path.insert(0, str(THIS.parent / "level10_ops"))
 
-from env_l11 import IbexL11Env, MODULES, N_OBS, PHASE_MAX_OPS
+from env_l11 import IbexL11Env, MODULES, N_OBS, PHASE_MAX_OPS, VTOP_BUILDS, DEFAULT_BUILD
 from codec_l11 import N_OPS, N_CSR_BUCKETS
 
 try:
@@ -53,19 +53,26 @@ try:
 except ImportError:
     _MASKABLE_AVAILABLE = False
 
-# ── Checkpoint paths (per-phase, sau generic pentru rulari fara --phase) ──────
-def _ckpt_paths(phase: int | None):
-    tag = f"p{phase}_" if phase else ""
+# ── Checkpoint paths (per-build + per-phase, sau generic pentru rulari fara
+# --phase) — separate pe build, fiindca hits/model dintr-un RTL nu au sens
+# reincarcate peste alt RTL (module/bin-uri diferite: vezi VTOP_BUILDS in
+# env_l11.py) ───────────────────────────────────────────────────────────────
+def _ckpt_paths(phase: int | None, build: str):
+    build_tag = "" if build == DEFAULT_BUILD else f"{build}_"
+    tag = f"{build_tag}p{phase}_" if phase else build_tag
     return (
         THIS / f"l11_{tag}checkpoint_model",
         THIS / f"l11_{tag}checkpoint_hits.pkl",
         THIS / f"l11_{tag}checkpoint_history.npz",
     )
 
-# Total bins toggle pe build-ul max (masurat o data via replay_corpus.py).
+# Total bins toggle per build (masurat o data via replay_corpus.py / suite run).
 # Folosit doar pentru afisarea baseline-ului inainte de primul episod;
 # self._total_tog din env se actualizeaza la valoarea reala dupa primul episod.
-TOTAL_MAX = 33624
+TOTAL_BINS = {
+    "max":                33624,
+    "opentitan_upstream":  38696,  # = totalul din baseline-ul testlist-suite (171 teste, 83.32%)
+}
 
 # ── Ctrl+C handler ────────────────────────────────────────────────────────────
 _stop_requested = False
@@ -184,6 +191,11 @@ def main():
     ap.add_argument("--phase",    type=int, choices=[1, 2, 3], default=None,
                     help="Faza curriculum (1=45 ops, 2=87 ops, 3=143 ops). "
                          "Fara --phase → action space complet (143 ops).")
+    ap.add_argument("--build", choices=list(VTOP_BUILDS), default=DEFAULT_BUILD,
+                    help="Ce Vtop antrenezi: 'max' (vechi, 33624 bins) sau "
+                         "'opentitan_upstream' (RTL vendorizat proaspat, preset "
+                         "oficial lowRISC, 38696 bins — exact build-ul pe care a "
+                         "rulat testlist-suite-ul de 171 teste, baseline 83.32%%).")
     ap.add_argument("--episodes", type=int, default=3600)
     ap.add_argument("--steps",    type=int, default=256)
     ap.add_argument("--timeout",  type=int, default=600,
@@ -231,11 +243,12 @@ def main():
         ap.error("--action-mask cere sb3-contrib. Instalează cu: pip install sb3-contrib")
 
     max_ops = PHASE_MAX_OPS[args.phase] if args.phase else N_OPS
-    CKPT_MODEL, CKPT_HITS, CKPT_HISTORY = _ckpt_paths(args.phase)
+    CKPT_MODEL, CKPT_HITS, CKPT_HISTORY = _ckpt_paths(args.phase, args.build)
+    total_bins = TOTAL_BINS[args.build]
 
     phase_label = f"faza {args.phase} ({max_ops} ops)" if args.phase else f"full ({N_OPS} ops)"
     print("=" * 70)
-    print(f"L11 PPO — config maxima (lockstep/ICache/PMP/RV32B on), {phase_label}, "
+    print(f"L11 PPO — build={args.build!r} (lockstep/ICache/PMP/RV32B on), {phase_label}, "
           f"obs {N_OBS} dims, {args.steps} pași/ep")
     print(f"  Action space: [{max_ops} ops, 32 rd, 32 rs1, 32 rs2, 5 imm, {N_CSR_BUCKETS} csr_bucket]")
     print(f"  Reward: episode_base + toggle_shaped + 0.3× branch")
@@ -272,7 +285,7 @@ def main():
     if remaining <= 0:
         print(f"  Deja {episodes_done} episoade făcute, nimic de rulat."); return
 
-    baseline_pct = 100. * len(initial_hits) / TOTAL_MAX if initial_hits else 0.0
+    baseline_pct = 100. * len(initial_hits) / total_bins if initial_hits else 0.0
 
     print(f"  Episoade totale: {args.episodes}  (rămase: {remaining})")
     print(f"  Pași/episod:     {args.steps}")
@@ -294,7 +307,7 @@ def main():
     if use_maskable:
         print(f"  Action masking:  ON (dim 'op', saturation>={args.mask_saturation}, "
               f"min unmasked frac={args.mask_min_unmasked_frac})")
-    print(f"  Baseline:        {baseline_pct:.2f}%  (din {len(initial_hits):,} / ~{TOTAL_MAX:,} bins)")
+    print(f"  Baseline:        {baseline_pct:.2f}%  (din {len(initial_hits):,} / ~{total_bins:,} bins)")
     print(f"  Checkpoint:      la fiecare {args.checkpoint_every} ep → {CKPT_MODEL}.zip")
     print(f"\n{'ep':>5} | {'ep%':>6} | {'cum%':>6} | {'tog+':>5} {'br+':>4} | {'Δbaseline':>10} | worst module")
     print("-" * 75)
@@ -309,6 +322,7 @@ def main():
                 max_ops=max_ops,
                 mask_saturation=args.mask_saturation,
                 mask_min_unmasked_frac=args.mask_min_unmasked_frac,
+                build=args.build,
             )
         return _init
 

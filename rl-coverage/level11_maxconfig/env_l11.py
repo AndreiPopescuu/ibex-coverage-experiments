@@ -21,7 +21,22 @@ THIS   = Path(__file__).resolve().parent
 L5     = (THIS.parent / "level5_real_rtl").resolve()
 L10    = (THIS.parent / "level10_ops").resolve()
 ML4DV  = (THIS.parent.parent / "cpu").resolve()
-VTOP   = ML4DV / "sim_build_max" / "Vtop"
+
+# Two interchangeable Vtop builds, same test_run_for_l8 harness + codec_l11
+# encoding, different RTL/module hierarchy:
+#   "max"                -> sim_build_max/Vtop: old vendored tree, custom
+#                           PMP/ICache/RV32B/lockstep config, 33624 toggle bins
+#   "opentitan_upstream"  -> sim_build_opentitan_upstream/Vtop: fresh-vendored
+#                           lowRISC/ibex master, official "opentitan" preset —
+#                           the exact build the 171-test testlist-suite baseline
+#                           (83.32% toggle) ran on, 38696 toggle bins.
+VTOP_BUILDS = {
+    "max":                (ML4DV / "sim_build_max" / "Vtop", "coverage_max"),
+    "opentitan_upstream":  (ML4DV / "sim_build_opentitan_upstream" / "Vtop",
+                             "coverage_opentitan_upstream"),
+}
+DEFAULT_BUILD = "max"
+VTOP   = VTOP_BUILDS[DEFAULT_BUILD][0]
 
 sys.path.insert(0, str(L5))
 sys.path.insert(0, str(L10))
@@ -134,7 +149,8 @@ def _module_of(key: str) -> str | None:
     return m.group(1).split("__")[0]
 
 
-def run_program(actions, program_json: str, covdat: Path, timeout: int = 600):
+def run_program(actions, program_json: str, covdat: Path, timeout: int = 600,
+                 vtop: Path = VTOP):
     machine = emit_program(actions)
     with open(program_json, "w") as f:
         json.dump({"n": len(machine), "agent": "l11",
@@ -153,7 +169,7 @@ def run_program(actions, program_json: str, covdat: Path, timeout: int = 600):
     env["MODULE"]     = "test_run_for_l8"
     env["RL_L8_JSON"] = program_json
     proc = subprocess.run(
-        [str(VTOP), f"+verilator+coverage+file+{covdat}"],
+        [str(vtop), f"+verilator+coverage+file+{covdat}"],
         cwd=str(ML4DV), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout,
     )
@@ -169,12 +185,15 @@ class IbexL11Env(gym.Env):
                  initial_hits: set | None = None, timeout: int = 600,
                  max_ops: int = N_OPS,
                  mask_saturation: float = MASK_SATURATION_DEFAULT,
-                 mask_min_unmasked_frac: float = MASK_MIN_UNMASKED_FRAC):
+                 mask_min_unmasked_frac: float = MASK_MIN_UNMASKED_FRAC,
+                 build: str = DEFAULT_BUILD):
         super().__init__()
-        if not VTOP.exists():
+        if build not in VTOP_BUILDS:
+            raise ValueError(f"Unknown build {build!r}, expected one of {list(VTOP_BUILDS)}")
+        self._vtop, covdat_prefix = VTOP_BUILDS[build]
+        if not self._vtop.exists():
             raise FileNotFoundError(
-                f"Prebuilt max-config Vtop not found at {VTOP}. "
-                f"Run `cd cpu && make CONFIG=max` first."
+                f"Prebuilt Vtop for build {build!r} not found at {self._vtop}."
             )
         self.episode_steps = episode_steps
         self._timeout = timeout
@@ -189,7 +208,7 @@ class IbexL11Env(gym.Env):
         # PID-ul parintelui de la momentul import-ului modulului.
         pid = os.getpid()
         self._program_json = f"/tmp/rl_l11_{pid}.json"
-        self._covdat        = ML4DV / f"coverage_max_{pid}.dat"
+        self._covdat        = ML4DV / f"{covdat_prefix}_{pid}.dat"
 
         self.action_space = spaces.MultiDiscrete(
             [self._max_ops, 32, 32, 32, IMM_BUCKETS, N_CSR_BUCKETS]
@@ -283,7 +302,7 @@ class IbexL11Env(gym.Env):
 
         if truncated:
             summary = run_program(self._actions, self._program_json, self._covdat,
-                                   timeout=self._timeout)
+                                   timeout=self._timeout, vtop=self._vtop)
             if summary is None:
                 info["vtop_failed"] = True
             else:
