@@ -78,6 +78,20 @@ nu de limitări ale RL-ului în sine. În ordine:
 | 792 (final etapă 128) | 128 pași | 31.324 | 80.95% |
 | 1100 | 256 pași | 31.488 | 81.37% |
 | 1200 | 256 pași | 31.499 | 81.40% |
+| 2000 | 256 pași | 32.164 | 83.12% |
+| 2300 | 256 pași | 32.216 | 83.25% |
+| 2400 | 256 pași | 32.221 | 83.27% |
+| 2520 (întrerupt, pauzat pt. comparație suită) | 256 pași | 32.221 | **83.27%** |
+
+**RL singur a ajuns la 83.27% (32.221/38.696) — la doar 0.05pp / 21 bin-uri
+sub baseline-ul suitei (83.32%, 32.242 bin-uri)**, fără ajutorul uniunii.
+Buget de instrucțiuni consumat până la ep2520: ~479.232 (vs 139.406 al
+suitei) — vezi §6 pentru actualizare.
+
+Antrenarea a fost întreruptă (grațios, checkpoint salvat) la ep2520 ca să se
+elibereze resurse pentru o rulare extinsă a suitei (la buget egal de
+instrucțiuni, ~516 target-total în loc de 150), pentru comparație directă
+"buget egal" — rezultat în lucru, de adăugat aici când se termină.
 
 Tipar clar: fiecare etapă (64→128→256) aduce un salt inițial, apoi se
 plafonează rapid. Rata de creștere scade constant (400→600: +1.802 hits;
