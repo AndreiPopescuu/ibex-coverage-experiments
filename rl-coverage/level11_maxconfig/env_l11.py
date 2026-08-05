@@ -488,7 +488,16 @@ class IbexL11Env(gym.Env):
                 reward = shaped_toggle + branch_reward
 
                 cum_pct   = 100.0 * len(self._cum_hits) / self._total_tog
-                worst_mod = min(MODULES,
+                # _mod_total[m] stays at its init value of 1 forever for any
+                # module that never actually appears in the coverage.dat for
+                # this build (e.g. ibex_branch_predict under opentitan_upstream,
+                # where BranchPredictor=0 means it's never elaborated) -- such
+                # a module is permanently stuck at 0/1=0.0% and would always
+                # win min(), making "worst module" useless for diagnosing real
+                # gaps. Excluded here (display/diagnostic only -- masking in
+                # action_masks() is unaffected).
+                _real_mods = [m for m in MODULES if self._mod_total[m] > 1]
+                worst_mod = min(_real_mods or MODULES,
                                 key=lambda m: self._mod_covered[m] / max(self._mod_total[m], 1))
                 branch_total = max(summary.by_kind["branch"][1], 1)
                 info.update({
