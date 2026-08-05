@@ -63,7 +63,12 @@ sys.path.insert(0, str(L5))
 sys.path.insert(0, str(L10))
 import cov_parser
 
-from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, emit_program
+from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, L11_CSRS, emit_program
+
+# Reused directly (not re-derived) so the RL agent's rd/rs1/rs2/imm_bucket
+# selection is byte-identical to the testlist-suite's own constrained-random
+# generator — see the override in IbexL11Env.step() below.
+from constrained_random_l11 import _pick_reg, _pick_bucket, P_HAZARD, P_ZERO, P_SAME_SRC
 
 # Curriculum phases: max op index (action[0] in [0, max_ops))
 # Phase 1 (45 ops): core RV32I ALU, loads/stores, CSR, RV32M, branches, JAL
@@ -129,12 +134,13 @@ def _build_op_modules() -> dict[int, tuple[str, ...]]:
         if op in _MEM_OPS:
             mods.update(("ibex_load_store_unit", "ibex_pmp"))
         if op in _CSR_OPS:
-            # CSR writes are the only path to pmpcfg/pmpaddr and to
-            # cpuctrl/secureseed (dummy_instr config) -> tag all four; an op
+            # CSR writes are the only path to pmpcfg/pmpaddr, to
+            # mcycle/minstret/mhpmcounter* (ibex_counter), and to
+            # cpuctrl/secureseed (dummy_instr config) -> tag all five; an op
             # only gets masked once ALL of its tagged modules saturate, so
             # CSR ops stay available as long as any one of these lags.
             mods.update(("ibex_cs_registers", "ibex_csr",
-                         "ibex_pmp", "ibex_dummy_instr"))
+                         "ibex_pmp", "ibex_dummy_instr", "ibex_counter"))
         if op in _MULDIV_OPS:
             mods.add("ibex_multdiv_fast")
         if op in _BRANCH_OPS:
@@ -148,6 +154,49 @@ def _build_op_modules() -> dict[int, tuple[str, ...]]:
 
 
 OP_MODULES: dict[int, tuple[str, ...]] = _build_op_modules()
+
+# ── csr_bucket -> RTL-module map, used to extend action masking onto the
+# csr_bucket sub-space (see action_masks() below) — the RL analogue of
+# testlist_l11.py's _build_pmp_focus/_build_csr_sweep domain knowledge: those
+# functions bias/sweep CSR *addresses* toward pmpcfg/pmpaddr and toward every
+# implemented CSR respectively, because that's exactly what's needed to reach
+# ibex_pmp's comparator toggles and ibex_counter's HPM-counter toggles. Rather
+# than importing that CRT-specific file into the RL env, the same domain
+# knowledge (which CSR addresses belong to which module) is re-derived here
+# directly from address sets, sourced from codec_l11.py/codec_l7.py's L11_CSRS
+# provenance comments. ────────────────────────────────────────────────────────
+_PMP_ADDRS = {0x3A0, 0x3A1, 0x3A2, 0x3A3} | {0x3B0 + i for i in range(16)}
+_COUNTER_ADDRS = (
+    {0xB00, 0xB02, 0xB80, 0xB82, 0x320}          # mcycle/minstret[h]/mcountinhibit
+    | {0xB03 + i for i in range(6)}              # mhpmcounter3..8
+    | {0x323 + i for i in range(6)}              # mhpmevent3..8
+    | {0xC00, 0xC01, 0xC02}                      # cycle/time/instret (user shadow)
+    | {0xB09 + i for i in range(6)}              # mhpmcounter9..14
+    | {0x329 + i for i in range(6)}              # mhpmevent9..14
+)
+_DUMMY_INSTR_ADDRS = {0x7C0, 0x7C1}  # cpuctrl, secureseed
+
+
+def _build_csr_bucket_modules() -> dict[int, str]:
+    out: dict[int, str] = {}
+    for i, addr in enumerate(L11_CSRS):
+        if addr in _PMP_ADDRS:
+            out[i] = "ibex_pmp"
+        elif addr in _COUNTER_ADDRS:
+            out[i] = "ibex_counter"
+        elif addr in _DUMMY_INSTR_ADDRS:
+            out[i] = "ibex_dummy_instr"
+        else:
+            out[i] = "ibex_cs_registers"
+    return out
+
+
+CSR_BUCKET_MODULES: dict[int, str] = _build_csr_bucket_modules()
+assert len(CSR_BUCKET_MODULES) == N_CSR_BUCKETS
+assert sum(1 for m in CSR_BUCKET_MODULES.values() if m == "ibex_pmp") == 20
+assert sum(1 for m in CSR_BUCKET_MODULES.values() if m == "ibex_dummy_instr") == 2
+assert sum(1 for m in CSR_BUCKET_MODULES.values() if m == "ibex_counter") == \
+    len(_COUNTER_ADDRS), "L11_CSRS is missing a counter CSR address"
 
 MASK_SATURATION_DEFAULT = 0.97
 MASK_MIN_UNMASKED_FRAC  = 0.15
@@ -223,6 +272,13 @@ class IbexL11Env(gym.Env):
         self._max_ops = max(1, min(max_ops, N_OPS))
         self._mask_saturation   = mask_saturation
         self._mask_min_unmasked = max(1, int(mask_min_unmasked_frac * self._max_ops))
+        self._mask_min_unmasked_csr = max(1, int(mask_min_unmasked_frac * N_CSR_BUCKETS))
+
+        # RNG + last-rd tracking for the CRT-identical rd/rs1/rs2/imm_bucket
+        # override in step() below — separate from PPO's own action sampling,
+        # mirrors constrained_random_l11.build_actions()'s last_rd threading.
+        self._rng = np.random.default_rng(seed)
+        self._last_rd: int | None = None
 
         # Path-uri unice per proces — esential pentru rulare paralela (SubprocVecEnv):
         # fara asta, mai multe instante ar scrie in acelasi /tmp/rl_l11.json si
@@ -275,20 +331,35 @@ class IbexL11Env(gym.Env):
     def action_masks(self) -> np.ndarray:
         """Flat bool mask for sb3-contrib's MaskablePPO, concatenated across
         all MultiDiscrete sub-spaces in order (op, rd, rs1, rs2, imm, csr) —
-        see MaskableMultiCategoricalDistribution.apply_masking(). Only the
-        `op` dimension is actually masked: an op is disallowed once every
-        module in OP_MODULES[op] is >= self._mask_saturation covered. rd/rs1/
-        rs2/imm/csr stay fully open — sb3-contrib masks each MultiDiscrete
-        sub-space independently (chosen simultaneously, not sequentially), so
-        masking e.g. csr_bucket conditionally on "op is a CSR write" isn't
-        expressible without an autoregressive policy head.
+        see MaskableMultiCategoricalDistribution.apply_masking(). Two
+        dimensions are actually masked, independently (sb3-contrib masks each
+        MultiDiscrete sub-space simultaneously, not sequentially, so this
+        isn't conditioned on "op is a CSR write" — that would need an
+        autoregressive policy head):
 
-        Guards against masking everything into a corner: masks are computed
-        from module totals that are only known after the first episode
-        (self._mod_total_set), and if fewer than self._mask_min_unmasked ops
-        would remain, masking is skipped for that step entirely.
+        - `op`: disallowed once every module in OP_MODULES[op] is
+          >= self._mask_saturation covered.
+        - `csr_bucket`: disallowed once CSR_BUCKET_MODULES[bucket]'s single
+          target module is >= self._mask_saturation covered. This is the RL
+          analogue of the testlist-suite's CRT constraints (riscv_pmp_suite_test/
+          riscv_csr_test biasing CSR *addresses* toward pmpcfg/pmpaddr and
+          the full CSR sweep, see CSR_BUCKET_MODULES above): it restricts
+          *which* CSR addresses remain choosable to the ones whose module
+          still lags, without picking the address for the agent — the policy
+          still freely chooses op/sequencing/timing and picks randomly (via
+          its own learned distribution) among whatever csr_bucket values
+          remain unmasked.
+
+        rd/rs1/rs2/imm stay fully open.
+
+        Guards against masking everything into a corner: both masks are
+        computed from module totals that are only known after the first
+        episode (self._mod_total_set), and each falls back to fully-open if
+        fewer than its configured minimum would remain unmasked
+        (self._mask_min_unmasked / self._mask_min_unmasked_csr).
         """
-        op_mask = np.ones(self._max_ops, dtype=bool)
+        op_mask  = np.ones(self._max_ops, dtype=bool)
+        csr_mask = np.ones(N_CSR_BUCKETS, dtype=bool)
         if self._mod_total_set:
             for op in range(self._max_ops):
                 mods = OP_MODULES.get(op, ())
@@ -299,8 +370,17 @@ class IbexL11Env(gym.Env):
                     op_mask[op] = False
             if op_mask.sum() < self._mask_min_unmasked:
                 op_mask[:] = True
-        rest_dims = int(sum(self.action_space.nvec[1:]))
-        return np.concatenate([op_mask, np.ones(rest_dims, dtype=bool)])
+
+            for bucket in range(N_CSR_BUCKETS):
+                mod = CSR_BUCKET_MODULES.get(bucket)
+                if mod and (self._mod_covered[mod] / max(self._mod_total[mod], 1)
+                            >= self._mask_saturation):
+                    csr_mask[bucket] = False
+            if csr_mask.sum() < self._mask_min_unmasked_csr:
+                csr_mask[:] = True
+
+        mid_dims = int(sum(self.action_space.nvec[1:-1]))  # rd, rs1, rs2, imm
+        return np.concatenate([op_mask, np.ones(mid_dims, dtype=bool), csr_mask])
 
     def _obs(self) -> np.ndarray:
         step_frac = self._step_idx / self.episode_steps
@@ -318,12 +398,38 @@ class IbexL11Env(gym.Env):
         self._actions.clear()
         self._step_idx = 0
         self._action_hist = deque([0] * HIST_LEN, maxlen=HIST_LEN)
+        self._last_rd = None  # fresh program -> no "previous instruction" to hazard off of
         return self._obs(), {}
 
     def step(self, action):
         op = int(action[0])
+        _, _, _, _, _, csr_bucket = (int(x) for x in action)
+
+        # CRT-identical override: rd/rs1/rs2/imm_bucket are replaced with
+        # constrained_random_l11.py's own sample_action() field logic
+        # (same functions, same P_HAZARD/P_ZERO/P_SAME_SRC constants, same
+        # boundary-biased bucket picker) instead of whatever the policy
+        # network output for those dimensions — these are the "syntactic"
+        # fields the testlist-suite hand-tunes to hit specific coverpoints
+        # (RAW_HAZARD/ZERO_DST/ZERO_SRC/SAME_SRC), not ones RL gains anything
+        # by learning itself. `op` (what to emit) and `csr_bucket` (already
+        # mask-restricted to under-covered CSR modules, see action_masks())
+        # stay under RL's own control — that's where sequencing/timing
+        # decisions actually live.
+        rd  = _pick_reg(self._rng, self._last_rd, prefer_hazard=False,
+                         p_hazard=P_HAZARD, p_zero=P_ZERO)
+        rs1 = _pick_reg(self._rng, self._last_rd, prefer_hazard=True,
+                         p_hazard=P_HAZARD, p_zero=P_ZERO)
+        if self._rng.random() < P_SAME_SRC:
+            rs2 = rs1
+        else:
+            rs2 = _pick_reg(self._rng, self._last_rd, prefer_hazard=True,
+                             p_hazard=P_HAZARD, p_zero=P_ZERO)
+        imm_bucket = _pick_bucket(self._rng, IMM_BUCKETS)
+        self._last_rd = rd
+
         self._action_hist.append(op)
-        self._actions.append(tuple(int(x) for x in action))
+        self._actions.append((op, rd, rs1, rs2, imm_bucket, csr_bucket))
         self._step_idx += 1
         truncated = self._step_idx >= self.episode_steps
         reward, info = 0.0, {}
