@@ -8,9 +8,16 @@ No riscv-dv/pygen code is vendored here — their real UVM generator needs a lic
 SystemVerilog+UVM simulator even just to generate instructions, and pygen (Google's
 pure-Python reimplementation) emits full .S assembly text that this project has no
 assembler to consume (every level here encodes raw machine-code words directly in
-Python instead — see codec_l10.py/codec_l11.py). So PROFILES below re-implements each
-portable lowRISC test's generation STRATEGY, reusing constrained_random_l11.py's
-weighted-category/hazard-injection sampler with per-test category weights.
+Python instead — see codec_l10.py/codec_l11.py). So PROFILES below ports each portable
+lowRISC test's ACTUAL generation mechanism (verified against the real vendored
+riscv-dv/ibex source this session, not guessed): a flat/uniform category-random
+baseline (constrained_random_l11.CATEGORY_WEIGHTS, matching category_dist's real
+default) with, where the real test's gen_opts call for it, either a category
+exclusion/ratio taken directly from that test's real +no_*=/+*_ratio= plusarg, or
+ratio-sized batches of directed instruction streams
+(constrained_random_l11.build_*_stream) shuffled in — the real
++directed_instr_N=<stream>,<ratio> mechanism. See constrained_random_l11.py's module
+docstring for what was verified and how.
 
 Every other lowRISC test name that needs infrastructure this testbench doesn't have
 (a debug module driving debug_req_i, a randomized interrupt agent, Spike co-simulation,
@@ -25,7 +32,11 @@ from dataclasses import dataclass
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from constrained_random_l11 import CATEGORIES, CATEGORY_WEIGHTS, sample_action  # noqa: E402
+from constrained_random_l11 import (  # noqa: E402
+    CATEGORIES, CATEGORY_WEIGHTS, sample_action,
+    build_loop_stream, build_pmp_write_stream, build_pmp_region_exec_stream,
+    build_load_store_stream, build_jal_stream, build_hazard_stream,
+)
 from codec_l11 import N_OPS, IMM_BUCKETS, L11_CSRS, N_CSR_BUCKETS, emit_program  # noqa: E402
 
 assert N_OPS == 143
@@ -34,17 +45,6 @@ _NOP = 0x00000013  # ADDI x0, x0, 0 — standard RV32 NOP encoding, hardcoded so
                     # doesn't need to reach into codec_l11's op-index table for it.
 
 _ALL_CATS = list(CATEGORY_WEIGHTS.keys())
-
-
-def _weights(**kw):
-    """Build a full category_weights dict (all _ALL_CATS keys, unlisted = 0.0)."""
-    d = {c: 0.0 for c in _ALL_CATS}
-    for k, v in kw.items():
-        assert k in d, f"unknown category {k!r} (not in {_ALL_CATS})"
-        d[k] = v
-    total = sum(d.values())
-    assert abs(total - 1.0) < 1e-6, f"weights {kw} sum to {total}, not 1.0"
-    return d
 
 
 @dataclass
@@ -57,58 +57,131 @@ class Profile:
     deterministic: bool = False    # builder ignores seed entirely — running >1 seed is a no-op
 
 
-def _build_weighted(category_weights, n_actions, categories=None,
-                     p_hazard=None, p_zero=None, p_same_src=None):
+def _build_weighted(category_weights, n_actions, categories=None):
     def _builder(seed):
         rng = np.random.default_rng(seed)
-        kwargs = {}
-        if p_hazard is not None:
-            kwargs["p_hazard"] = p_hazard
-        if p_zero is not None:
-            kwargs["p_zero"] = p_zero
-        if p_same_src is not None:
-            kwargs["p_same_src"] = p_same_src
+        actions = [sample_action(rng, category_weights, categories) for _ in range(n_actions)]
+        return emit_program(actions)
+    return _builder
+
+
+def _build_hint_stream(category_weights, n_actions, hint_frac=0.3):
+    """riscv_hint_instr_test: the real test uses gen_test=riscv_rand_instr_test
+    with a +hint_instr_ratio=5 plusarg (out of a 1000-scale ratio, on a
+    10000-instruction default program — ~0.5% of instructions become
+    literal HINT-encoded instructions, i.e. ops that would normally write a
+    register instead get rd forced to x0, a reserved-but-architecturally-
+    legal encoding). We don't have their per-op HINT-encoding table to port
+    exactly, so approximate a HINT as any sampled op with rd forced to x0.
+    hint_frac is set much higher than their literal ~0.5% because our
+    programs (400 actions) are ~25x shorter than their 10000-instruction
+    default, where the literal ratio would round to ~2 instructions and not
+    meaningfully exercise anything.
+    """
+    def _builder(seed):
+        rng = np.random.default_rng(seed)
         actions = []
-        last_rd = None
         for _ in range(n_actions):
-            action, last_rd = sample_action(rng, last_rd, category_weights, categories, **kwargs)
-            actions.append(action)
+            op, rd, rs1, rs2, imm_bucket, csr_bucket = sample_action(rng, category_weights)
+            if rng.random() < hint_frac:
+                rd = 0
+            actions.append((op, rd, rs1, rs2, imm_bucket, csr_bucket))
         return emit_program(actions)
     return _builder
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Portable profiles — plain weighted-random instruction mix
+# Portable profiles — real gen_opts mechanisms ported from the actual
+# testlist.yaml (fetched live from github.com/lowRISC/ibex this session; see
+# constrained_random_l11.py's module docstring for what was verified against
+# the vendored riscv-dv source itself, not just testlist.yaml).
 # ─────────────────────────────────────────────────────────────────────────────
 
-_BASELINE_WEIGHTS = dict(CATEGORY_WEIGHTS)  # today's default mix (0.45/0.15/0.08/...)
+def _exclude(*excluded):
+    """Uniform category weights with `excluded` categories zeroed out — for
+    real gen_opts flags that disable a category outright (e.g. +no_branch_jump=1),
+    as opposed to a hand-tuned bias (which real riscv-dv mostly doesn't do either,
+    see constrained_random_l11.py's docstring)."""
+    kept = [c for c in _ALL_CATS if c not in excluded]
+    w = {c: 0.0 for c in _ALL_CATS}
+    for c in kept:
+        w[c] = 1.0 / len(kept)
+    return w
 
-_ARITH_WEIGHTS = _weights(alu=0.65, muldiv=0.20, upper_imm=0.10, csr=0.05)
-_JUMP_WEIGHTS = _weights(jump=0.35, alu=0.30, branch=0.15, load_store=0.10,
-                          compressed=0.05, upper_imm=0.03, csr=0.02)
-_JUMP_STRESS_WEIGHTS = _weights(jump=0.55, alu=0.25, branch=0.10, upper_imm=0.05, compressed=0.05)
-_LOOP_WEIGHTS = _weights(branch=0.40, alu=0.35, load_store=0.10, jump=0.05,
-                          muldiv=0.05, compressed=0.05)
-_MMU_STRESS_WEIGHTS = _weights(load_store=0.55, alu=0.25, branch=0.10,
-                                compressed=0.05, upper_imm=0.05)
-_ILLEGAL_WEIGHTS = _weights(exception=0.40, alu=0.30, load_store=0.10, branch=0.10,
-                             csr=0.05, system=0.05)
-_HINT_WEIGHTS = _weights(alu=0.70, load_store=0.10, branch=0.10, compressed=0.10)
-_UNALIGNED_WEIGHTS = _weights(load_store=0.70, alu=0.20, branch=0.05, compressed=0.05)
-_RV32IM_WEIGHTS = _weights(alu=0.55, load_store=0.15, muldiv=0.08, branch=0.10, jump=0.03,
-                            upper_imm=0.03, csr=0.04, system=0.015, exception=0.005)
 
-# bitmanip: split the "alu" category into plain-ALU vs bitmanip so the profile can bias
-# heavily toward the 56 bitmanip ops (Zba/Zbb/Zbs + legacy zbp/zbc/zbe/zbf) specifically,
-# not just "alu" as a whole (which today also contains base R/I-type ALU, ops 0-19).
+def _ratio_weights(**literal_ratios):
+    """Category weights built from a real /1000-scale plusarg ratio (e.g.
+    +illegal_instr_ratio=25 -> 2.5%), remaining categories sharing the rest
+    uniformly — same ratio unit real riscv-dv uses for directed-stream
+    insertion (see _build_directed below), reused here since
+    illegal_instr_ratio is conceptually the same "N per 1000" knob applied
+    to category selection instead of stream insertion."""
+    reserved = sum(literal_ratios.values()) / 1000.0
+    assert reserved < 1.0
+    rest = [c for c in _ALL_CATS if c not in literal_ratios]
+    w = {c: v / 1000.0 for c, v in literal_ratios.items()}
+    for c in rest:
+        w[c] = (1.0 - reserved) / len(rest)
+    return w
+
+
+_BASELINE_WEIGHTS = dict(CATEGORY_WEIGHTS)  # uniform — matches category_dist's real default
+
+# riscv_arithmetic_basic_test real gen_opts: +no_branch_jump=1 (+no_fence=1
+# excludes just FENCE specifically, finer-grained than this project's
+# "system" category models, so left as-is).
+_ARITH_WEIGHTS = _exclude("branch", "jump")
+
+# riscv_illegal_instr_test real gen_opts: +illegal_instr_ratio=25 (/1000 scale)
+_ILLEGAL_WEIGHTS = _ratio_weights(exception=25)
+
+# riscv_rv32im_instr_test real gen_opts: +disable_compressed_instr=1
+_RV32IM_WEIGHTS = _exclude("compressed")
+
+# riscv_hint_instr_test: real gen_opts (+hint_instr_ratio=5) don't bias category
+# selection at all, just insert literal HINT-encoded (rd=x0) instructions at a
+# ratio — see _build_hint_stream below, which does that; category mix stays baseline.
+_HINT_WEIGHTS = dict(CATEGORY_WEIGHTS)
+
+# bitmanip: split the "alu" category into plain-ALU vs bitmanip so bitmanip ops (Zba/
+# Zbb/Zbs + legacy zbp/zbc/zbe/zbf) are their own category, matching real riscv-dv's
+# +enable_b_extension=1 (which makes bitmanip ops ELIGIBLE for category_dist, not
+# specially upweighted — category_dist stays flat, see constrained_random_l11.py).
 _BITMANIP_CATEGORIES = dict(CATEGORIES)
 del _BITMANIP_CATEGORIES["alu"]
 _BITMANIP_CATEGORIES["alu_base"] = list(range(0, 19))
 _BITMANIP_CATEGORIES["bitmanip"] = list(range(87, 143))
-_BITMANIP_WEIGHTS = {c: 0.0 for c in _BITMANIP_CATEGORIES}
-_BITMANIP_WEIGHTS.update(bitmanip=0.55, alu_base=0.15, load_store=0.10,
-                          branch=0.10, compressed=0.05, csr=0.05)
-assert abs(sum(_BITMANIP_WEIGHTS.values()) - 1.0) < 1e-6
+_BITMANIP_WEIGHTS = {c: 1.0 / len(_BITMANIP_CATEGORIES) for c in _BITMANIP_CATEGORIES}
+
+
+def _build_directed(n_actions, streams, category_weights=None, categories=None):
+    """Compose a uniform/exclusion baseline with ratio-sized batches of
+    directed streams shuffled in — the real mechanism behind lowRISC's
+    +directed_instr_N=<stream>,<ratio> gen_opts (real ratio unit:
+    instr_insert_cnt = instr_cnt * ratio / 1000, from
+    riscv_asm_program_gen.sv, verified against source this session).
+    streams: list of (stream_fn, ratio) where stream_fn(rng) -> list[action].
+    """
+    def _builder(seed):
+        rng = np.random.default_rng(seed)
+        directed = []
+        for stream_fn, ratio in streams:
+            budget = max(1, int(n_actions * ratio / 1000))
+            while len(directed) < budget:
+                directed += stream_fn(rng)
+        base_n = max(0, n_actions - len(directed))
+        base = [sample_action(rng, category_weights, categories) for _ in range(base_n)]
+        actions = directed + base
+        rng.shuffle(actions)
+        return emit_program(actions)
+    return _builder
+
+
+def _load_store_hazard_stream(rng, n_actions):
+    """riscv_load_store_hazard_instr_stream, restricted to load_store ops via
+    build_hazard_stream's shrunk-register-pool mechanism (see
+    constrained_random_l11.py)."""
+    return build_hazard_stream(rng, n_actions, categories={"load_store": CATEGORIES["load_store"]})
 
 
 def _build_csr_sweep(seed):
@@ -129,39 +202,25 @@ def _build_csr_sweep(seed):
     return emit_program(actions)
 
 
-# PMP CSR index range within L11_CSRS: pmpcfg0-3 (4) + pmpaddr0-15 (16) = 20 contiguous
-# entries, used by _build_pmp_focus below to bias CSR writes toward PMP configuration
-# regardless of what the base weighted sampler's uniform csr_bucket pick would choose.
-_PMP_START = L11_CSRS.index(0x3A0)
-_PMP_COUNT = 20
-assert L11_CSRS[_PMP_START:_PMP_START + _PMP_COUNT] == \
-    [0x3A0, 0x3A1, 0x3A2, 0x3A3] + [0x3B0 + i for i in range(16)], \
-    "L11_CSRS layout changed — update _PMP_START/_PMP_COUNT in testlist_l11.py"
-
-_PMP_WEIGHTS = _weights(csr=0.55, alu=0.20, load_store=0.20, branch=0.05)
-
-
-def _build_pmp_focus(seed, n_actions=900, p_pmp=0.8):
-    """Stands in for lowRISC's riscv_pmp_basic/_disable_all_regions/_out_of_bounds/
-    _full_random/_region_exec_test + riscv_epmp_*_test (10 tests total): reweight the
-    CSR category heavily, then for any sampled CSR op force its csr_bucket into the
-    PMP range with probability p_pmp. This only exercises ibex_pmp's comparator
-    TOGGLE coverage — there's no Spike co-simulation here to check the resulting
-    access-fault/no-fault decision is architecturally correct, so it's a coverage
-    proxy, not a functional PMP test.
-    """
-    rng = np.random.default_rng(seed)
-    csr_ops = set(CATEGORIES["csr"])
-    actions = []
-    last_rd = None
-    for _ in range(n_actions):
-        action, last_rd = sample_action(rng, last_rd, _PMP_WEIGHTS)
-        op, rd, rs1, rs2, imm_bucket, csr_bucket = action
-        if op in csr_ops and rng.random() < p_pmp:
-            csr_bucket = _PMP_START + int(rng.integers(0, _PMP_COUNT))
-            action = (op, rd, rs1, rs2, imm_bucket, csr_bucket)
-        actions.append(action)
-    return emit_program(actions)
+# PMP profile: stands in for lowRISC's riscv_pmp_basic/_disable_all_regions/
+# _out_of_bounds/_full_random/_region_exec_test + riscv_epmp_*_test (10 tests
+# total). Real riscv-dv drives these through cfg.pmp_cfg.gen_pmp_write_test()
+# (literal writes to every pmpcfg/pmpaddr CSR, ported as
+# build_pmp_write_stream) plus ibex-specific directed streams
+# ibex_make_pmp_region_exec_stream (read-modify-write toggle, ported
+# approximately as build_pmp_region_exec_stream) and
+# ibex_cross_pmp_region_mem_access_stream (boundary-adjacent memory access,
+# approximated by build_load_store_stream, see its docstring for what's
+# lost vs. the real resolved-address version). This only exercises
+# ibex_pmp's comparator TOGGLE coverage — there's no Spike co-simulation
+# here to check the resulting access-fault/no-fault decision is
+# architecturally correct, so it's a coverage proxy, not a functional PMP
+# test (same limitation the old category-weight version had).
+_PMP_STREAMS = [
+    (build_pmp_write_stream, 80),
+    (build_pmp_region_exec_stream, 400),
+    (build_load_store_stream, 300),
+]
 
 
 # Best-effort curated list of standard RISC-V CSR addresses that Ibex's "opentitan"
@@ -198,7 +257,8 @@ def _build_invalid_csr(seed, n_actions=200):
 
 PROFILES = [
     Profile("riscv_arithmetic_basic_test",
-            "Arithmetic instruction test, no load/store/branch instructions",
+            "Arithmetic instruction test, no load/store/branch instructions "
+            "(real gen_opts: +no_branch_jump=1 -> branch/jump categories excluded)",
             600, _build_weighted(_ARITH_WEIGHTS, 600), _ARITH_WEIGHTS),
     Profile("riscv_machine_mode_rand_test",
             "Machine mode random instruction test (default boot privilege — same mix "
@@ -208,41 +268,64 @@ PROFILES = [
             "Random instruction stress test",
             800, _build_weighted(_BASELINE_WEIGHTS, 800), _BASELINE_WEIGHTS),
     Profile("riscv_rand_jump_test",
-            "Jump among large number of sub-programs (jump-heavy mix)",
-            500, _build_weighted(_JUMP_WEIGHTS, 500), _JUMP_WEIGHTS),
+            "Jump among large number of sub-programs, stress-testing iTLB-like fetch "
+            "paths (real gen_opts: +directed_instr_0=riscv_load_store_rand_instr_stream,8 "
+            "-- the real test is load/store-heavy, not jump-heavy, despite the name)",
+            500, _build_directed(500, [(build_load_store_stream, 8)], _BASELINE_WEIGHTS),
+            _BASELINE_WEIGHTS),
     Profile("riscv_jump_stress_test",
-            "Stress back to back jump instructions",
-            400, _build_weighted(_JUMP_STRESS_WEIGHTS, 400), _JUMP_STRESS_WEIGHTS),
+            "Stress back to back jump instructions "
+            "(real gen_opts: +directed_instr_1=riscv_jal_instr,20)",
+            400, _build_directed(400, [(build_jal_stream, 20)], _BASELINE_WEIGHTS),
+            _BASELINE_WEIGHTS),
     Profile("riscv_loop_test",
-            "Loop test (branch-back heavy mix)",
-            500, _build_weighted(_LOOP_WEIGHTS, 500), _LOOP_WEIGHTS),
+            "Loop test (real gen_opts: +directed_instr_1=riscv_loop_instr,20 -- ported "
+            "as build_loop_stream, see its docstring for the label/PC-resolution caveat)",
+            500, _build_directed(500, [(build_loop_stream, 20)], _BASELINE_WEIGHTS),
+            _BASELINE_WEIGHTS),
     Profile("riscv_mmu_stress_test",
-            "Load/store heavy mix stressing varied memory access patterns "
-            "(Ibex has no MMU — this stresses the load/store unit and PMP address "
-            "comparators instead, the closest analogous logic)",
-            600, _build_weighted(_MMU_STRESS_WEIGHTS, 600), _MMU_STRESS_WEIGHTS),
+            "Load/store heavy mix stressing varied memory access patterns (Ibex has no "
+            "MMU — this stresses the load/store unit and PMP address comparators "
+            "instead). Real gen_opts: +directed_instr_0=riscv_load_store_rand_instr_stream,40 "
+            "+directed_instr_1=riscv_load_store_hazard_instr_stream,40",
+            600, _build_directed(600, [(build_load_store_stream, 40),
+                                        (_load_store_hazard_stream, 40)], _BASELINE_WEIGHTS),
+            _BASELINE_WEIGHTS),
     Profile("riscv_illegal_instr_test",
-            "Illegal instruction test, verify the processor can detect illegal instructions",
+            "Illegal instruction test, verify the processor can detect illegal "
+            "instructions (real gen_opts: +illegal_instr_ratio=25, i.e. 2.5% exception-"
+            "category ops)",
             400, _build_weighted(_ILLEGAL_WEIGHTS, 400), _ILLEGAL_WEIGHTS),
     Profile("riscv_hint_instr_test",
-            "HINT-style instruction test (alu ops biased toward rd=x0)",
-            400, _build_weighted(_HINT_WEIGHTS, 400, p_zero=0.5), _HINT_WEIGHTS),
+            "HINT-style instruction test (real gen_opts: +hint_instr_ratio=5 -- baseline "
+            "category mix, with rd forced to x0 on a fraction of instructions to "
+            "approximate literal HINT encodings, see _build_hint_stream)",
+            400, _build_hint_stream(_HINT_WEIGHTS, 400), _HINT_WEIGHTS),
     Profile("riscv_csr_test",
             "Test all CSR instructions on all implemented CSR registers (deterministic sweep)",
             N_CSR_BUCKETS, _build_csr_sweep, None, deterministic=True),
     Profile("riscv_unaligned_load_store_test",
             "Load/store heavy mix (proxy for unaligned-address stress — this project's "
-            "imm-bucket granularity isn't fine enough to target specific byte offsets, "
-            "so this maximizes load/store density instead as the closest achievable proxy)",
-            500, _build_weighted(_UNALIGNED_WEIGHTS, 500), _UNALIGNED_WEIGHTS),
+            "imm-bucket granularity isn't fine enough to target specific byte offsets). "
+            "Real gen_opts: +directed_instr_0=riscv_load_store_rand_instr_stream,20 "
+            "+directed_instr_1=riscv_load_store_hazard_instr_stream,20 "
+            "+directed_instr_2=riscv_multi_page_load_store_instr_stream,20 -- the "
+            "multi-page stream isn't ported separately (no address-space/paging model "
+            "here), folded into the plain load/store stream's ratio instead",
+            500, _build_directed(500, [(build_load_store_stream, 40),
+                                        (_load_store_hazard_stream, 20)], _BASELINE_WEIGHTS),
+            _BASELINE_WEIGHTS),
     Profile("riscv_rv32im_instr_test",
-            "Random instruction test without compressed instructions",
+            "Random instruction test without compressed instructions "
+            "(real gen_opts: +disable_compressed_instr=1 -> compressed category excluded)",
             500, _build_weighted(_RV32IM_WEIGHTS, 500), _RV32IM_WEIGHTS),
     Profile("riscv_bitmanip_full_test",
             "Random instruction test with B extension in full configuration (the 3 "
             "lowRISC bitmanip test variants — full/otearlgrey/balanced — collapse to "
             "this 1 profile since this project's RTL build has one fixed RV32B "
-            "parameter, not one per test)",
+            "parameter, not one per test). Real gen_opts only ENABLE bitmanip ops as "
+            "eligible for the (flat) category_dist, they don't upweight them -- uniform "
+            "across the split alu_base/bitmanip categories, not a hand-tuned bias",
             700, _build_weighted(_BITMANIP_WEIGHTS, 700, categories=_BITMANIP_CATEGORIES),
             _BITMANIP_WEIGHTS),
 
@@ -251,9 +334,11 @@ PROFILES = [
             "PARTIAL — stands in for riscv_pmp_basic/_disable_all_regions/"
             "_out_of_bounds/_full_random/_region_exec_test (5) + riscv_epmp_mml/"
             "_mml_execute_only/_mml_read_only/_mmwp/_rlb_test (5) — 10 lowRISC tests "
-            "total. CSR-heavy mix biased toward PMP CSRs; exercises ibex_pmp toggle "
-            "coverage only, NOT fault-correctness (no Spike cosim).",
-            900, _build_pmp_focus, _PMP_WEIGHTS),
+            "total. Directed streams ported from cfg.pmp_cfg.gen_pmp_write_test() + "
+            "ibex_make_pmp_region_exec_stream + a load/store approximation of "
+            "ibex_cross_pmp_region_mem_access_stream (see _PMP_STREAMS above); "
+            "exercises ibex_pmp toggle coverage only, NOT fault-correctness (no Spike cosim).",
+            900, _build_directed(900, _PMP_STREAMS, _BASELINE_WEIGHTS), _BASELINE_WEIGHTS),
     Profile("riscv_invalid_csr_test",
             "PARTIAL — CSR accesses to a curated list of CSR addresses Ibex's "
             "opentitan config doesn't implement (F/D, user-trap, supervisor-mode). "

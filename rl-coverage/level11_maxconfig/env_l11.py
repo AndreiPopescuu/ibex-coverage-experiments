@@ -66,9 +66,13 @@ import cov_parser
 from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, L11_CSRS, emit_program
 
 # Reused directly (not re-derived) so the RL agent's rd/rs1/rs2/imm_bucket
-# selection is byte-identical to the testlist-suite's own constrained-random
-# generator — see the override in IbexL11Env.step() below.
-from constrained_random_l11 import _pick_reg, _pick_bucket, P_HAZARD, P_ZERO, P_SAME_SRC
+# selection matches the testlist-suite's own constrained-random generator —
+# see the override in IbexL11Env.step() below. Both are now plain uniform
+# picks (ported from real riscv-dv source, which has no forced-hazard/zero/
+# same-src biasing in its base flow — see constrained_random_l11.py's
+# module docstring for what was verified and why the old P_HAZARD/P_ZERO/
+# P_SAME_SRC mechanism was removed).
+from constrained_random_l11 import _pick_reg, _pick_bucket
 
 # Curriculum phases: max op index (action[0] in [0, max_ops))
 # Phase 1 (45 ops): core RV32I ALU, loads/stores, CSR, RV32M, branches, JAL
@@ -274,11 +278,9 @@ class IbexL11Env(gym.Env):
         self._mask_min_unmasked = max(1, int(mask_min_unmasked_frac * self._max_ops))
         self._mask_min_unmasked_csr = max(1, int(mask_min_unmasked_frac * N_CSR_BUCKETS))
 
-        # RNG + last-rd tracking for the CRT-identical rd/rs1/rs2/imm_bucket
-        # override in step() below — separate from PPO's own action sampling,
-        # mirrors constrained_random_l11.build_actions()'s last_rd threading.
+        # RNG for the CRT-identical rd/rs1/rs2/imm_bucket override in step()
+        # below — separate from PPO's own action sampling.
         self._rng = np.random.default_rng(seed)
-        self._last_rd: int | None = None
 
         # Path-uri unice per proces — esential pentru rulare paralela (SubprocVecEnv):
         # fara asta, mai multe instante ar scrie in acelasi /tmp/rl_l11.json si
@@ -398,7 +400,6 @@ class IbexL11Env(gym.Env):
         self._actions.clear()
         self._step_idx = 0
         self._action_hist = deque([0] * HIST_LEN, maxlen=HIST_LEN)
-        self._last_rd = None  # fresh program -> no "previous instruction" to hazard off of
         return self._obs(), {}
 
     def step(self, action):
@@ -406,27 +407,21 @@ class IbexL11Env(gym.Env):
         _, _, _, _, _, csr_bucket = (int(x) for x in action)
 
         # CRT-identical override: rd/rs1/rs2/imm_bucket are replaced with
-        # constrained_random_l11.py's own sample_action() field logic
-        # (same functions, same P_HAZARD/P_ZERO/P_SAME_SRC constants, same
-        # boundary-biased bucket picker) instead of whatever the policy
-        # network output for those dimensions — these are the "syntactic"
-        # fields the testlist-suite hand-tunes to hit specific coverpoints
-        # (RAW_HAZARD/ZERO_DST/ZERO_SRC/SAME_SRC), not ones RL gains anything
-        # by learning itself. `op` (what to emit) and `csr_bucket` (already
+        # constrained_random_l11.py's own uniform field-selection logic
+        # instead of whatever the policy network output for those
+        # dimensions — these are the "syntactic" fields real riscv-dv leaves
+        # to plain uniform randomization in its base flow (see
+        # constrained_random_l11.py's module docstring) rather than
+        # anything RL's sparse episodic reward could productively learn
+        # (the observation doesn't even expose the previous instruction's
+        # register values). `op` (what to emit) and `csr_bucket` (already
         # mask-restricted to under-covered CSR modules, see action_masks())
         # stay under RL's own control — that's where sequencing/timing
         # decisions actually live.
-        rd  = _pick_reg(self._rng, self._last_rd, prefer_hazard=False,
-                         p_hazard=P_HAZARD, p_zero=P_ZERO)
-        rs1 = _pick_reg(self._rng, self._last_rd, prefer_hazard=True,
-                         p_hazard=P_HAZARD, p_zero=P_ZERO)
-        if self._rng.random() < P_SAME_SRC:
-            rs2 = rs1
-        else:
-            rs2 = _pick_reg(self._rng, self._last_rd, prefer_hazard=True,
-                             p_hazard=P_HAZARD, p_zero=P_ZERO)
+        rd  = _pick_reg(self._rng)
+        rs1 = _pick_reg(self._rng)
+        rs2 = _pick_reg(self._rng)
         imm_bucket = _pick_bucket(self._rng, IMM_BUCKETS)
-        self._last_rd = rd
 
         self._action_hist.append(op)
         self._actions.append((op, rd, rs1, rs2, imm_bucket, csr_bucket))
