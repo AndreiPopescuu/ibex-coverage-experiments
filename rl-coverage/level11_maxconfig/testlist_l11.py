@@ -31,6 +31,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+import random as _random_stdlib
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from constrained_random_l11 import (  # noqa: E402
     CATEGORIES, CATEGORY_WEIGHTS, sample_action,
@@ -38,6 +40,7 @@ from constrained_random_l11 import (  # noqa: E402
     build_load_store_stream, build_jal_stream, build_hazard_stream,
 )
 from codec_l11 import N_OPS, IMM_BUCKETS, L11_CSRS, N_CSR_BUCKETS, emit_program  # noqa: E402
+from constrained_llm_l11 import ALL_STREAM_BUILDERS, CATEGORY_WEIGHTS_LLM  # noqa: E402
 
 assert N_OPS == 143
 
@@ -255,6 +258,33 @@ def _build_invalid_csr(seed, n_actions=200):
     return words + [_NOP] * 16
 
 
+def _build_llm_rtl_directed(seed):
+    """Run all 40 RTL-derived stream builders from constrained_llm_l11.py in a
+    seeded-random order, then pad to at least 200 actions with CATEGORY_WEIGHTS_LLM
+    weighted random sampling if the streams are short.
+
+    Each builder targets a specific RTL structure in one of the tracked Ibex modules
+    (ibex_pmp, ibex_csr, ibex_counter, ibex_dummy_instr, ibex_alu, ibex_multdiv_fast,
+    ibex_load_store_unit, ibex_branch_predict). The full sequence of all 40 streams
+    exercises every RTL-targeted path in one run.
+    """
+    rng_py = _random_stdlib.Random(seed)
+    rng_np = np.random.default_rng(seed)
+
+    builders = list(ALL_STREAM_BUILDERS)
+    rng_py.shuffle(builders)
+
+    actions = []
+    for fn in builders:
+        actions += fn(rng_py)
+
+    while len(actions) < 200:
+        actions.append(sample_action(rng_np, CATEGORY_WEIGHTS_LLM))
+
+    rng_py.shuffle(actions)
+    return emit_program(actions)
+
+
 PROFILES = [
     Profile("riscv_arithmetic_basic_test",
             "Arithmetic instruction test, no load/store/branch instructions "
@@ -355,6 +385,13 @@ PROFILES = [
             "just the baseline mix with MRET/system ops present incidentally — no "
             "privilege level is actually verified to change.",
             500, _build_weighted(_BASELINE_WEIGHTS, 500), _BASELINE_WEIGHTS),
+    Profile("llm_rtl_directed_test",
+            "RTL-derived directed streams from constrained_llm_l11.py: 40 stream "
+            "builders each targeting a specific RTL structure in ibex_pmp, ibex_csr, "
+            "ibex_counter, ibex_dummy_instr, ibex_alu, ibex_multdiv_fast, "
+            "ibex_load_store_unit, ibex_branch_predict. Derived by LLM analysis of "
+            "the RTL source, NOT ported from lowRISC testlist.yaml.",
+            1200, _build_llm_rtl_directed, CATEGORY_WEIGHTS_LLM),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -441,6 +478,7 @@ UPSTREAM_ITERATIONS = {
     "riscv_pmp_suite_test": 870,
     "riscv_invalid_csr_test": 10,
     "riscv_user_mode_rand_test": 10,
+    "llm_rtl_directed_test": 10,
 }
 assert set(UPSTREAM_ITERATIONS) == {p.name for p in PROFILES}, \
     "UPSTREAM_ITERATIONS must have one entry per PROFILES entry"
