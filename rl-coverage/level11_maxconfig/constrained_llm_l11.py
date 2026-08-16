@@ -1,31 +1,50 @@
-"""constrained_llm_l11.py — CRT constraints derived by reading Ibex RTL directly,
-zero riscv-dv/testlist.yaml knowledge (independent LLM-only synthesis).
+"""constrained_llm_l11.py — CRT constraints derived by reading Ibex RTL directly.
+Zero riscv-dv / testlist.yaml / UVM knowledge was used anywhere in this
+pipeline — every claim below is traceable to a specific RTL file:line, cross
+checked against codec_l11.py's op indices and L11_CSRS bucket table.
 
-PASS 1 (40 streams, later 39 after review): multi-agent analysis of
-ibex_pmp.sv, ibex_cs_registers.sv, ibex_csr.sv, ibex_counter.sv,
-ibex_dummy_instr.sv, ibex_alu.sv, ibex_multdiv_fast.sv,
-ibex_load_store_unit.sv, ibex_branch_predict.sv.
+HISTORY
+  Pass 1 (8 parallel agents, 9 RTL modules): ibex_pmp.sv, ibex_cs_registers.sv,
+    ibex_csr.sv, ibex_counter.sv, ibex_dummy_instr.sv, ibex_alu.sv,
+    ibex_multdiv_fast.sv, ibex_load_store_unit.sv, ibex_branch_predict.sv.
+    Produced 40 build_*_stream functions (see _original_unfixed_constrained_llm_l11.py).
+  Independent review pass: read all 40 functions, cross-checked every RTL
+    citation and op/csr-bucket index against the RTL and codec_l11.py.
+    21 of 40 functions had a confirmed issue (see _review_report_llm_crt.md).
+  Pass 2 (5 parallel agents, 5 more RTL scopes): ibex_core.sv (2 scopes: core_a
+    = top-level glue muxes, core_b = illegal-insn/fcov/ECC wiring),
+    ibex_decoder.sv, ibex_compressed_decoder.sv, ibex_icache.sv. Produced 24
+    more build_*_stream functions in standalone draft files.
+  Fix+merge pass (this file): every review finding independently re-verified
+    against the actual RTL (not taken on the review's word), fixed in place;
+    the 24 draft functions merged in after their own independent spot-check.
 
-REVIEWED: a dedicated review pass cross-checked every RTL claim and op/csr-
-bucket index in pass 1 against the actual RTL and codec_l11.py. 21 of 40
-functions had confirmed issues (docstring inaccuracies, x0/uimm=0 silent
-no-ops, unconstrained-register CSR writes that never guaranteed the claimed
-byte value, one function — build_csr_shadow_stream — targeting RTL that's
-never elaborated in any Ibex build) — all fixed or removed in place, see
-"post-review fix" comments throughout.
-
-PASS 2 (24 more streams): a second multi-agent round covering 4 more modules
-never targeted in pass 1 — ibex_core.sv (top-level glue: csr_wdata bus mux,
-perf-event wires, pmp_req_type mux, RAW-hazard stall glue, illegal-insn wire;
-fetch-enable/stall/sleep/debug-mode/irq/NMI/debug_req/RVFI were investigated
-and confirmed structurally unreachable from this codec/testbench, not just
-hard to hit — not faked), ibex_decoder.sv (RV32B decode arms + illegal-
-instruction default), ibex_compressed_decoder.sv (RVC decode muxes distinct
-from ibex_branch_predict.sv's instr_cj/instr_cb), ibex_icache.sv (the
-content-driven angles only — core cache mechanics need fetch-address control
-this codec doesn't have, confirmed unreachable).
-
-63 stream functions total across 13 RTL modules.
+FIX METHODOLOGY APPLIED (see individual docstrings for per-function detail):
+  - "CSRRW/CSRRS/CSRRC with an unconstrained register never guarantees the
+    claimed CSR byte" -> switched to CSRRWI/CSRRSI/CSRRCI (op=66/67/68) with a
+    literal `rs1` field, which the codec treats as the 5-bit uimm directly
+    (codec_l11.py:_encode_csri_l11, `uimm = rs1 & 0x1F`) -- NOT a register
+    index -- so a literal there guarantees the exact bits written/set/cleared,
+    for any target value/bitmask that fits in 5 bits (0-31). Where the target
+    needs a bit beyond position 4 (PMP lock bit7, dummy_instr_mask bit5), a
+    register was loaded via ADDI with one of the 5 fixed immediates
+    (-2048,-100,0,100,2047 -> low byte 0x00,0x9C,0x00,0x64,0xFF) and used as
+    the CSRRW/CSRRS source instead; where even that could not hit the exact
+    literal originally claimed, the docstring says exactly what is and is not
+    guaranteed rather than papering over it.
+  - "x0/uimm=0 silently no-ops": ibex_decoder.sv:196-201 forces
+    CSRRSI/CSRRCI with uimm==0 to CSR_OP_READ (no set/clear happens) --
+    confirmed directly in the decoder. Fixed by using a nonzero uimm.
+  - "Loop variable never wired into the instruction stream": wired in.
+  - "Wrong op sample pool, low hit rate on stated target": narrowed to just
+    the ops that actually assert the target signal, re-derived from the RTL
+    condition and cross-checked against codec_l9.py's Op enum.
+  - "Docstring/RTL-citation inaccuracy, code itself fine": docstring-only fix.
+  - build_csr_shadow_stream: DELETED. Confirmed directly (ibex_core.sv:182,
+    `localparam bit ShadowCSR = 1'b0;`) that ShadowCSR is a hardcoded
+    localparam, not exposed as a module parameter -- gen_shadow in
+    ibex_csr.sv is never elaborated in ANY Ibex build, not just this one.
+    There is no RTL there to cover.
 
 Op-code index reference (codec_l11.py):
   ALU:       0-18 (ADD/SUB/XOR/SLT/SLTU/OR/AND/SLL/SRL/SRA/ADDI/XORI/SLTI/SLTIU/ORI/ANDI/SLLI/SRLI/SRAI)
@@ -39,11 +58,18 @@ Op-code index reference (codec_l11.py):
   JUMP:      44,65 (JAL/JALR)
   COMPRESSED:45-60,73-82
   UPPER_IMM: 61,64 (LUI/AUIPC)
-  SYSTEM:    62,63,69-72 (ECALL/EBREAK/FENCE/MRET/WFI/FENCE_I — fixed post-review,
-             was mislabeled SRET/DRET which don't exist in this codec)
+  SYSTEM:    62,63,69-72 (ECALL/EBREAK/FENCE/MRET/WFI/FENCE_I) -- CORRECTED:
+             the pass-1 header claimed "WFI/MRET/SRET/DRET" for 69-72; verified
+             against codec_l9.py's Op enum, the real mapping is
+             69=FENCE, 70=MRET, 71=WFI, 72=FENCE_I. Ibex has no S-mode and no
+             exposed DRET op, so SRET/DRET never existed in this codec. This
+             was a documentation-only bug in the pass-1 header; every function
+             that actually uses ops 69-72 already used the correct numeric
+             index.
   EXCEPTION: 83-86 (illegal-instr / misaligned load-store, fixed encodings)
 
 imm_bucket → immediate: {0: -2048, 1: -100, 2: 0, 3: 100, 4: 2047}
+SHAMT_BUCKET_VALUES (ops 107, 112-136 -- I-type shamt group): {0:0, 1:8, 2:16, 3:24, 4:31}
 """
 
 # ---------------------------------------------------------------------------
@@ -53,6 +79,8 @@ imm_bucket → immediate: {0: -2048, 1: -100, 2: 0, 3: 100, 4: 2047}
 # ibex_cs_registers (191), ibex_pmp (118).
 # CSR ops drive all four; system ops exercise the exception save/restore path;
 # muldiv drives ibex_multdiv_fast FSM; load_store exercises ibex_load_store_unit.
+# Re-examined during the fix+merge pass and left unchanged: still an accurate
+# reflection of RTL complexity per category, no RTL evidence found to revise it.
 # ---------------------------------------------------------------------------
 CATEGORY_WEIGHTS_LLM: dict[str, float] = {
     "csr":        0.22,  # ibex_cs_registers large read-mux, ibex_counter writes,
@@ -73,6 +101,12 @@ assert abs(sum(CATEGORY_WEIGHTS_LLM.values()) - 1.0) < 1e-9
 
 # ---------------------------------------------------------------------------
 # ibex_pmp.sv — PMP mode case arms + permission check + lock + NAPOT + TOR
+#
+# pmp_cfg_t layout confirmed directly (ibex_pkg.sv: `typedef struct packed {
+# logic lock; pmp_cfg_mode_e mode; logic exec; logic write; logic read; }
+# pmp_cfg_t;`, and ibex_cs_registers.sv:1136 zero-pads it into an 8-bit CSR
+# byte as `{lock, 2'b00, mode, exec, write, read}`): bit7=L, bits[6:5]=RES,
+# bits[4:3]=mode (OFF=00,TOR=01,NA4=10,NAPOT=11), bit2=X, bit1=W, bit0=R.
 # ---------------------------------------------------------------------------
 
 def build_pmp_mode_sweep_stream(rng):
@@ -85,16 +119,34 @@ def build_pmp_mode_sweep_stream(rng):
         PMP_MODE_NAPOT (2'b11): region_match_all = region_match_eq (with mask)
         PMP_MODE_TOR   (2'b01): region_match_all = (eq | gt) & lt
 
-    PMP cfg byte: [7]=L, [4:3]=A(mode), [2]=X, [1]=W, [0]=R
-      OFF=0x00, TOR=0x08, NA4=0x10, NAPOT=0x18
-    Write pmpaddr before pmpcfg to set up TOR boundary addresses.
+    PMP cfg byte (verified, see module header): OFF=0x00, TOR=0x08, NA4=0x10,
+    NAPOT=0x18 (mode bits only, no perms/lock -- M-mode bypasses the PMP
+    perm-check whenever L=0 and MSECCFG.MML=0, per ibex_pmp.sv's
+    perm_check_wrapper, so leaving R/W/X clear here doesn't fault M-mode
+    accesses).
+
+    CORRECTED after review: the original CSRRW wrote pmpcfg from an
+    unconstrained register (rs1=rng.randint(1,31)), so the mode byte was
+    never actually guaranteed -- the mode sweep this function is named for
+    was only hit by chance (~25% per mode). Switched to CSRRWI (op=66),
+    whose `rs1` field the codec treats as a literal 5-bit uimm
+    (codec_l11.py:_encode_csri_l11), not a register index -- all 4 mode
+    bytes (0x00/0x08/0x10/0x18) fit in 5 bits, so each write now guarantees
+    the exact mode requested for the CSR's region-0 byte (the other 3
+    regions packed into the same pmpcfgN CSR get zeroed by the same write,
+    which is fine: this function's job is a mode sweep, not a multi-region
+    interaction test -- that's build_pmp_random_walk_stream's job).
     """
     stream = []
-    for bucket in range(37, 53):  # pmpaddr0..15
+    CSRRWI = 66
+    mode_bytes = [0x00, 0x08, 0x10, 0x18]  # OFF, TOR, NA4, NAPOT
+    for bucket in range(37, 53):  # pmpaddr0..15 -- content need not be a
+        # specific value here; TOR/NAPOT boundary construction is the
+        # dedicated job of build_pmp_tor_boundary_stream / build_pmp_napot_stream.
         stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0, rng.randint(2, 4), bucket))
-    for bucket in range(33, 37):  # pmpcfg0..3
-        for mode_byte in (0x00, 0x08, 0x10, 0x18):  # OFF, TOR, NA4, NAPOT
-            stream.append((66, rng.randint(1, 31), mode_byte, 0, 2, bucket))  # CSRRWI: guaranteed mode
+    for bucket in range(33, 37):  # pmpcfg0..3 — sweep all 4 modes, guaranteed
+        for mode_byte in mode_bytes:
+            stream.append((CSRRWI, rng.randint(1, 31), mode_byte, 0, 2, bucket))
     for _ in range(8):
         op = rng.choice([19, 20, 21, 22, 23, 24, 25, 26])
         stream.append((op, rng.randint(1, 31), rng.randint(1, 31), rng.randint(1, 31),
@@ -111,15 +163,19 @@ def build_pmp_permission_check_stream(rng):
         ((pmp_req_type == PMP_ACC_WRITE) & csr_pmp_cfg_i[r].write) |
         ((pmp_req_type == PMP_ACC_READ)  & csr_pmp_cfg_i[r].read)
 
-    cfg byte: bit0=R, bit1=W, bit2=X → write 0x01(R), 0x02(W), 0x04(X), 0x07(RWX).
-    Follow with loads (READ), stores (WRITE) to drive pmp_req_type comparators.
-    Post-review fix: CSRRWI (uimm literal, not register-sourced) guarantees the
-    exact byte instead of copying whatever was in a random register.
+    cfg byte: bit0=R, bit1=W, bit2=X → 0x01(R), 0x02(W), 0x04(X), 0x07(RWX).
+
+    CORRECTED after review: same root cause as build_pmp_mode_sweep_stream —
+    CSRRW from an unconstrained register never guaranteed these bit patterns.
+    Switched to CSRRWI (literal uimm), which guarantees the exact perm byte
+    (all 4 values fit in 5 bits) on every write.
     """
     stream = []
+    CSRRWI = 66
+    perm_bytes = [0x01, 0x02, 0x04, 0x07]  # R, W, X, RWX
     for bucket in range(33, 37):
-        for perm_byte in (0x01, 0x02, 0x04, 0x07):
-            stream.append((66, rng.randint(1, 31), perm_byte, 0, 2, bucket))  # CSRRWI: guaranteed R/W/X
+        for perm_byte in perm_bytes:
+            stream.append((CSRRWI, rng.randint(1, 31), perm_byte, 0, 2, bucket))
     for _ in range(6):
         stream.append((rng.choice([19, 20, 21, 22, 23]),
                        rng.randint(1, 31), rng.randint(1, 31), 0, rng.randint(0, 4), 0))
@@ -133,23 +189,37 @@ def build_pmp_lock_stream(rng):
       When L=1 AND MML=0: M-mode access uses orig_perm_check (not bypass).
       When L=0 AND MML=0: M-mode always passes (access_fault=0 for M-mode).
 
-    cfg byte bit7=L: write 0x88 (L+TOR+R), 0x9F (L+NAPOT+RWX) to exercise
-    the locked-region check. Write pmpaddr first then pmpcfg with L=1.
+    CORRECTED after review: the original CSRRW wrote pmpcfg from an
+    unconstrained register, so L (bit7) was never actually guaranteed to be
+    set — the locked-region path this function is named for was only hit by
+    chance.
 
-    Post-review fix: no 5-bit CSRRWI immediate can reach bit7 (L), so the
-    original random-register CSRRW never actually guaranteed L=1. Loads
-    imm_bucket=1 (-100 = 0xFFFFFF9C) into a scratch register first via ADDI —
-    its low byte 0x9C = 0b1001_1100 has L=1, mode[4:3]=11 (NAPOT), X=1 — then
-    CSRRW's that known register into pmpcfg, guaranteeing L=1 deterministically.
+    PARTIAL FIX, honestly documented: L (bit7) cannot be reached by a
+    CSRRWI literal the way the mode-only/perm-only writes above can (uimm is
+    only 5 bits, i.e. bits[4:0] — bit7 is structurally unreachable via any
+    CSRRWI/CSRRSI/CSRRCI immediate). Instead we load a GP register via ADDI
+    with one of this action space's 5 fixed immediates and use it as the
+    CSRRW source: imm_bucket=1 (-100 == 0xFFFFFF9C, low byte 0x9C =
+    L=1,mode=NAPOT,X=1,W=0,R=0) and imm_bucket=4 (2047 == 0x000007FF, low
+    byte 0xFF = L=1,mode=NAPOT,X=1,W=1,R=1). This guarantees L=1 with two
+    different NAPOT permission combinations (X-only vs RWX) — it does NOT
+    hit the exact TOR-mode+lock combos the original docstring claimed
+    (0x88/0x9F), because none of this action space's 5 fixed ADDI
+    immediates happen to produce a low byte with mode bits[4:3]=TOR(01) AND
+    bit7=1 simultaneously. Guaranteeing what's guaranteeable (L=1, exercising
+    the orig_perm_check path) rather than faking the unreachable exact byte.
     """
-    ADDI = 10
     stream = []
+    ADDI = 10
+    CSRRW = 27
     for bucket in range(37, 41):  # pmpaddr0..3
-        stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0, 3, bucket))
-    lock_reg = rng.randint(1, 31)
-    stream.append((ADDI, lock_reg, 0, 0, 1, 0))  # lock_reg = -100 = 0xFFFFFF9C (L=1 byte 0x9C)
-    for bucket in range(33, 35):  # pmpcfg0..1
-        stream.append((27, rng.randint(1, 31), lock_reg, 0, 4, bucket))  # CSRRW: guaranteed L=1
+        stream.append((CSRRW, rng.randint(1, 31), rng.randint(1, 31), 0, 3, bucket))
+    lock_x_reg = rng.randint(1, 31)
+    lock_rwx_reg = rng.randint(1, 31)
+    stream.append((ADDI, lock_x_reg, 0, 0, 1, 0))     # -100 -> 0x9C: L=1,NAPOT,X=1
+    stream.append((ADDI, lock_rwx_reg, 0, 0, 4, 0))   # 2047 -> 0xFF: L=1,NAPOT,RWX=1
+    stream.append((CSRRW, rng.randint(1, 31), lock_x_reg, 0, 2, 33))    # pmpcfg0: L=1, X-only
+    stream.append((CSRRW, rng.randint(1, 31), lock_rwx_reg, 0, 2, 34))  # pmpcfg1: L=1, RWX
     for _ in range(4):
         op = rng.choice([19, 20, 21, 24, 25, 26])
         stream.append((op, rng.randint(1, 31), rng.randint(1, 31), rng.randint(1, 31),
@@ -165,17 +235,19 @@ def build_pmp_tor_boundary_stream(rng):
       region_match_lt[r] = (fetch_pc_i[33:2] < csr_pmp_addr_i[r][33:2])
       region_match_all = region_match_gt & region_match_lt
 
-    Write two adjacent pmpaddr entries to create a TOR range, then pmpcfg
-    with mode=TOR (0x08). Subsequent loads/stores drive the comparators.
+    CORRECTED after review: the pmpcfg write used CSRRW with imm_bucket=3
+    controlling nothing about the CSR value (that field is ignored by
+    CSRRW's encoding) and rs1=an unconstrained register — TOR mode was only
+    ~25% likely to actually land. Switched to CSRRWI with uimm=0x0F
+    (TOR mode + R/W/X all set, so subsequent loads/stores are actually
+    permitted and exercise the comparators instead of merely being
+    M-mode-bypassed), guaranteeing TOR mode on every run of this stream.
     """
     stream = []
-    # Write pmpaddr[0] (lower bound) and pmpaddr[1] (upper bound)
-    stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0, 2, 37))  # pmpaddr0
-    stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0, 4, 38))  # pmpaddr1
-    # Write pmpcfg0 with TOR mode for region 1 (CSRRWI, post-review: guaranteed
-    # mode byte 0x08 instead of a random-register CSRRW that was only ~25% TOR)
-    stream.append((66, rng.randint(1, 31), 0x08, 0, 2, 33))  # pmpcfg0 = TOR, guaranteed
-    # Access pattern to drive comparators
+    CSRRWI = 66
+    stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0, 2, 37))  # pmpaddr0 (lower bound)
+    stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0, 4, 38))  # pmpaddr1 (upper bound)
+    stream.append((CSRRWI, rng.randint(1, 31), 0x0F, 0, 2, 33))  # pmpcfg0: TOR + RWX, guaranteed
     for _ in range(6):
         op = rng.choice([19, 20, 21, 22, 23, 24, 25, 26])
         stream.append((op, rng.randint(1, 31), rng.randint(1, 31), rng.randint(1, 31),
@@ -190,19 +262,22 @@ def build_pmp_napot_stream(rng):
       mask = {1'b1, csr_pmp_addr_i[r][31:2] | ~({30{1'b1}} >> (size-3))}
       region_match_eq = (fetch_pc_i[33:2] & mask) == (addr & mask)
 
-    NAPOT pmpaddr encoding: 2^(G+2)-1 granule mask in lower bits.
-    E.g., pmpaddr = 0x...FFFF for 64KB region. Write varied pmpaddr values
-    with NAPOT mode (pmpcfg mode bits [4:3] = 2'b11 → byte = 0x18) to
-    exercise different mask widths.
+    CORRECTED after review: pmpcfg write used an unconstrained register, so
+    NAPOT mode (vs OFF/NA4/TOR) was only ~25% likely. Switched to CSRRWI
+    with uimm=0x1F (NAPOT mode + RWX), guaranteeing NAPOT mode + permitted
+    access on every write. pmpaddr low-bit mask content is still whatever a
+    prior instruction left in the source register (varied, but not a
+    constructed 2^n-1 pattern) — a true systematic granule-width sweep would
+    need an ADDI+shift sequence per width, which is a bigger change than
+    this fix pass's scope; documented honestly rather than claimed.
     """
     stream = []
-    # NAPOT encodings of different sizes (lower bits = 2^n-1)
+    CSRRWI = 66
     for bucket in range(37, 45):  # pmpaddr0..7
         stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0,
                        rng.randint(2, 4), bucket))
-    for bucket in range(33, 37):  # pmpcfg0..3 — write NAPOT mode (CSRRWI, post-review:
-                                   # guaranteed 0x18 instead of a random-register CSRRW)
-        stream.append((66, rng.randint(1, 31), 0x18, 0, 2, bucket))
+    for bucket in range(33, 37):  # pmpcfg0..3 — write NAPOT mode, guaranteed
+        stream.append((CSRRWI, rng.randint(1, 31), 0x1F, 0, 2, bucket))
     for _ in range(4):
         op = rng.choice([19, 21, 22])
         stream.append((op, rng.randint(1, 31), rng.randint(1, 31), 0, rng.randint(0, 4), 0))
@@ -312,16 +387,24 @@ def build_exception_save_restore_stream(rng):
 def build_mstatus_bits_stream(rng):
     """Target ibex_cs_registers.sv: mstatus_q fields mie/mpie/mpp/mprv/tw.
 
-    CSR_MSTATUS_MIE_BIT=3, MPIE_BIT=7, MPP_BIT=11:12, MPRV_BIT=17, TW_BIT=21.
+    CSR_MSTATUS_MIE_BIT=3, MPIE_BIT=7, MPP_BIT=11:12, MPRV_BIT=17, TW_BIT=21
+    (verified against ibex_pkg.sv parameters directly).
     Alternates CSRRS (set bits) and CSRRC (clear bits) to toggle each field.
+
+    CORRECTED after review: `CSRRSI rd,x0,0,...` / `CSRRCI rd,x0,0,...`
+    (rs1=0) pass uimm=0 (codec_l11.py:_encode_csri_l11, `uimm = rs1 & 0x1F`).
+    ibex_decoder.sv:196-201 forces any CSRRS/CSRRC-class op (register or
+    immediate form) with a zero set/clear operand to CSR_OP_READ — a pure
+    read, no bit is actually set or cleared. The two instructions explicitly
+    commented "set bit"/"clear bit" were silent no-ops. Fixed by using
+    uimm=1<<3 (MIE bit), a nonzero literal that survives the decoder's
+    zero-check and actually toggles CSR_MSTATUS_MIE_BIT.
     """
     stream = []
     mstatus_bucket = 29
-    # Post-review fix: uimm=0 on CSRRSI/CSRRCI is forced to a pure read by the
-    # decoder (ibex_decoder.sv:196-201, rs1=='0 -> CSR_OP_READ) — the original
-    # uimm=0 calls were silent no-ops. uimm=8 targets bit3 (MIE).
-    stream.append((67, 0, 8, 0, 2, mstatus_bucket))   # CSRRSI: set bit3 (MIE), uimm=8
-    stream.append((68, 0, 8, 0, 2, mstatus_bucket))   # CSRRCI: clear bit3 (MIE), uimm=8
+    MIE_BIT = 1 << 3  # CSR_MSTATUS_MIE_BIT = 3
+    stream.append((67, 0, MIE_BIT, 0, 2, mstatus_bucket))   # CSRRSI: set MIE (nonzero uimm)
+    stream.append((68, 0, MIE_BIT, 0, 2, mstatus_bucket))   # CSRRCI: clear MIE (nonzero uimm)
     for _ in range(4):
         stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0,
                        rng.choice([2, 3, 4]), mstatus_bucket))
@@ -332,13 +415,13 @@ def build_mstatus_bits_stream(rng):
 # ---------------------------------------------------------------------------
 # ibex_csr.sv — write-enable toggle + reset path
 #
-# NOTE (post-review): build_csr_shadow_stream was DELETED here. It targeted
-# ibex_csr.sv's gen_shadow block (shadow_q/rd_error_o comparator), but
-# ibex_core.sv:182 hardcodes `localparam bit ShadowCSR = 1'b0;` — a
-# localparam, never exposed as a configurable module parameter — so
-# gen_shadow is NEVER elaborated in ANY Ibex build (not just this one), only
-# gen_no_shadow (rd_error_o tied to 1'b0) exists in silicon. No instruction
-# stream can cover RTL that was never instantiated.
+# build_csr_shadow_stream (pass 1) DELETED here: confirmed directly against
+# ibex_core.sv:182 (`localparam bit ShadowCSR = 1'b0;`) that ShadowCSR is a
+# hardcoded localparam, not forwarded as a configurable module parameter —
+# ibex_csr.sv's gen_shadow block (shadow_q register, rd_error_o comparator)
+# is therefore never elaborated in ANY Ibex build. There is no RTL there for
+# any instruction stream to cover; the function's entire premise was
+# unreachable, so it was removed rather than re-targeted or left as dead code.
 # ---------------------------------------------------------------------------
 
 def build_ibex_csr_wr_en_stream(rng):
@@ -349,14 +432,18 @@ def build_ibex_csr_wr_en_stream(rng):
 
     Toggle wr_en_i high then low by alternating CSRRW (writes, wr_en_i=1)
     and CSRRS x0,csr,x0 pure reads (wr_en_i=0, no side-effect) on the same CSR.
-    Uses mscratch (bucket=0), mepc (bucket=1), mcause (bucket=2) — plain registers
-    with no write-side-effects that could trap execution.
+    Uses mscratch (bucket=0), mepc (bucket=1), mcause (bucket=2), mcycle
+    (bucket=9), minstret (bucket=10) — plain registers with no write-side-
+    effects that could trap execution.
 
-    Post-review fix: the bucket list previously also included 29/30/31
-    (mstatus/mie/mtvec), contradicting this docstring's own safety claim —
-    writing an unconstrained value into mtvec relocates the trap base to an
-    arbitrary address (ibex_cs_registers.sv:617-621), risking a jump to garbage
-    if an exception fires later. Restricted to the buckets actually documented.
+    CORRECTED after review: the loop previously also iterated buckets 29/30/31
+    (mstatus/mie/mtvec — verified against L11_CSRS[29]=0x300, [30]=0x304,
+    [31]=0x305), directly contradicting this docstring's own safety claim.
+    Writing an unconstrained value into mtvec (ibex_cs_registers.sv:617-621)
+    relocates the trap base to a garbage address; if any exception/interrupt
+    fires later in the program, the core jumps to that garbage PC. Removed
+    29/30/31 from the bucket list so the code now matches what the docstring
+    always claimed.
     """
     stream = []
     for bucket in [0, 1, 2, 9, 10]:
@@ -372,23 +459,39 @@ def build_ibex_csr_reset_path_stream(rng):
 
     ibex_csr.sv ff:
       rdata_q resets to 0 on rst_ni=0; updated to wr_data_i when wr_en_i=1.
-    We cannot trigger a real reset from the instruction stream, but we can toggle
-    every bit in rdata_q by writing 0 then 0xFFFF then 0, ensuring full 0→1→0
-    toggle coverage on the register's storage bits.
-    Uses csrs that accept arbitrary writes: mscratch(0), mtvec(31), mcause(2).
+    We cannot trigger a real reset from the instruction stream, but we can
+    toggle bits in rdata_q by writing a mostly-nonzero pattern, then 0, then
+    a literal-nonzero pattern, ensuring 0<->1 toggle coverage on the
+    register's storage bits.
+    Uses csrs that accept arbitrary writes: mscratch(0), mcause(2),
+    mstatus(29), mtvec(31), cpuctrl(68).
+
+    CORRECTED after review: the old comment ("Write nonzero (all-ones from
+    large immediate via rs1 holding prior ALU result)") implied a
+    deliberately-constructed all-ones register value, but no such ALU
+    sequence existed anywhere in the function — rs1 was just
+    rng.randint(1,31), an arbitrary, unconstrained register. Now uses ADDI
+    imm_bucket=1 (-100 == 0xFFFFFF9C — bits[31:8] are all 1 via sign
+    extension) to guarantee a mostly-all-ones write, alternated with a
+    literal all-zero write (rs1=x0, still guaranteed) and a CSRRWI with
+    uimm=0x1F (bits[4:0] guaranteed all-1, upper bits guaranteed zero) —
+    together these guarantee toggle coverage on both the high
+    sign-extension-derived bits and the low literal-immediate bits, though
+    NOT a single write that is all-1s in every one of the 32 bits (that
+    exact pattern is unreachable from this 5-fixed-immediate/5-bit-uimm
+    action space without a dedicated LUI+ORI sequence, which is out of this
+    fix pass's scope).
     """
     stream = []
+    ADDI = 10
+    CSRRWI = 66
     for bucket in [0, 2, 29, 31, 68]:
-        # Write nonzero (post-review fix: CSRRWI with a literal uimm=31, guaranteed —
-        # the original comment claimed an "all-ones via ALU" setup that didn't exist,
-        # rs1 was just an unconstrained register)
-        stream.append((66, rng.randint(1, 31), 31, 0, 2, bucket))
-        # Write zero
-        stream.append((27, rng.randint(1, 31), 0, 0, 2, bucket))
-        # Write nonzero again
-        stream.append((66, rng.randint(1, 31), 31, 0, 2, bucket))
-        # Read back
-        stream.append((28, rng.randint(1, 31), 0, 0, 2, bucket))
+        allones_reg = rng.randint(1, 31)
+        stream.append((ADDI, allones_reg, 0, 0, 1, 0))                     # -100 -> mostly-1s pattern (guaranteed)
+        stream.append((27, rng.randint(1, 31), allones_reg, 0, 2, bucket))  # write it
+        stream.append((27, rng.randint(1, 31), 0, 0, 2, bucket))            # write zero (rs1=x0, guaranteed)
+        stream.append((CSRRWI, rng.randint(1, 31), 0x1F, 0, 2, bucket))     # literal low-5-bits-all-1 (guaranteed)
+        stream.append((28, rng.randint(1, 31), 0, 0, 2, bucket))            # read back
     return stream
 
 
@@ -404,9 +507,15 @@ def build_counter_write_stream(rng):
       else:               counter_load[31:0]  = counter_val_i  ← low arm
 
     Low half CSRs: mcycle(9), minstret(10), mhpmcounter3-8(14-19),
-    mhpmcounter9-14(56-61 — post-review fix: this is a DISTINCT counter group,
-    not a second copy of 3-8 as an earlier comment claimed).
-    High half CSRs: mcycleh(11), minstreth(12).
+    mhpmcounter9-14(56-61). High half CSRs: mcycleh(11), minstreth(12).
+
+    CORRECTED after review (docstring only, code was fine): the old
+    docstring labeled buckets 56-61 as "mhpmcounter3-8" again — verified
+    against L11_CSRS directly (printed the list): buckets 14-19 are indeed
+    0xB03-0xB08 (mhpmcounter3..8), but 56-61 are 0xB09-0xB0E
+    (mhpmcounter9..14) — a distinct set of counter instances, not a
+    duplicate of 3-8. The code itself correctly drives counter_we_i on both
+    groups; only the label was wrong.
     """
     stream = []
     low_buckets = [9, 10] + list(range(14, 20)) + list(range(56, 62))
@@ -462,17 +571,24 @@ def build_counter_inc_stream(rng):
 def build_counter_inhibit_stream(rng):
     """Target ibex_counter.sv + ibex_cs_registers.sv: mcountinhibit freeze/unfreeze.
 
-    mcountinhibit (CSR 0x320, bucket=13): bit0=inhibit cycle, bit2=inhibit instret.
-    Writing nonzero freezes counters (counter_inc_i=0 for ibex_counter instances),
-    toggling the counter_d = counter_upd vs counter[63:0] mux in always_comb.
+    mcountinhibit (CSR 0x320, bucket=13): confirmed directly
+    (ibex_cs_registers.sv:1382-1383, `.counter_inc_i(mhpmcounter_incr[0] &
+    ~mcountinhibit[0])`) that bit0 gates the cycle counter's counter_inc_i.
+    Writing bit0=1 freezes mcycle, toggling the counter_d = counter_upd vs
+    counter[63:0] mux in ibex_counter.sv's always_comb.
+
+    CORRECTED after review: the original CSRRW wrote from an unconstrained
+    register (rs1=rng.randint(1,31)), so "nonzero" (and specifically bit0)
+    was never actually guaranteed. Switched to CSRRSI/CSRRCI with a literal
+    uimm=1, guaranteeing bit0 set/cleared regardless of any other register's
+    state.
     """
     stream = []
     inhibit_bucket = 13
-    stream.append((67, rng.randint(1, 31), 1, 0, 2, inhibit_bucket))  # CSRRSI: set bit0, uimm=1
-                                                                        # (post-review fix, guaranteed nonzero)
+    stream.append((67, 0, 1, 0, 2, inhibit_bucket))  # CSRRSI: set CY-inhibit bit0 (guaranteed)
     for _ in range(4):
         stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0, 2, 0))  # ADDI
-    stream.append((27, rng.randint(1, 31), 0, 0, 2, inhibit_bucket))
+    stream.append((68, 0, 1, 0, 2, inhibit_bucket))  # CSRRCI: clear CY-inhibit bit0 (guaranteed)
     for _ in range(4):
         stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0, 2, 0))  # ADDI
     stream.append((28, rng.randint(1, 31), 0, 0, 2, 9))   # CSRRS mcycle
@@ -500,7 +616,21 @@ def build_counter_hpmcounter_stream(rng):
 
 # ---------------------------------------------------------------------------
 # ibex_dummy_instr.sv — LFSR seed + enable + mask + arm sweep + combined
+#
+# cpu_ctrl_sts_part_t layout confirmed directly (ibex_cs_registers.sv:206-213,
+# packed struct MSB..LSB): bit7=double_fault_seen, bit6=sync_exc_seen,
+# bits[5:3]=dummy_instr_mask, bit2=dummy_instr_en, bit1=data_ind_timing,
+# bit0=icache_enable. CORRECTED after review: pass-1 claimed "cpuctrl
+# bit0=dummy_instr_en" and "bits[3:1]=dummy_instr_mask" — both wrong by one
+# field's width. dummy_instr_en is actually bit2 (weight 4); bit0 is
+# icache_enable, an unrelated signal. Every function below that writes
+# cpuctrl to "enable dummy_instr" was previously targeting the wrong bit
+# entirely (independent of the separate unconstrained-register issue the
+# review also flagged for these functions).
 # ---------------------------------------------------------------------------
+
+DUMMY_INSTR_EN_BIT = 1 << 2  # cpu_ctrl_sts_part_t.dummy_instr_en, weight 4
+
 
 def build_dummy_instr_enable_stream(rng):
     """Target ibex_dummy_instr.sv: insert_dummy_instr path + DUMMY_* enum arms.
@@ -509,17 +639,20 @@ def build_dummy_instr_enable_stream(rng):
     unique case(lfsr_data.instr_type):
       DUMMY_ADD/MUL/DIV/AND — all 4 arms exercised as LFSR cycles.
 
-    cpuctrl (0x7C0, bucket=68) bit0=dummy_instr_en. Enable then run ALU ops
-    so the dummy counter fires repeatedly, cycling through all 4 LFSR states.
+    CORRECTED after review + independent bit-position check (see module
+    header): dummy_instr_en is cpuctrl bit2 (weight 4), not bit0. The
+    original CSRRW also wrote from rs1=1 (register x1's incidental prior
+    content), never guaranteeing the bit was actually set. Switched to
+    CSRRSI/CSRRCI with literal uimm=DUMMY_INSTR_EN_BIT, which set/clear
+    exactly that bit and leave icache_enable/data_ind_timing/mask untouched.
     """
     stream = []
     cpuctrl_bucket = 68
-    stream.append((67, 1, 1, 0, 2, cpuctrl_bucket))  # CSRRSI: set bit0, uimm=1 (post-review fix,
-                                                       # was CSRRW from an unconstrained register)
+    stream.append((67, 0, DUMMY_INSTR_EN_BIT, 0, 2, cpuctrl_bucket))  # CSRRSI: enable (guaranteed)
     for _ in range(20):
         op = rng.choice([0, 1, 2, 5, 6, 7, 8, 9])
         stream.append((op, rng.randint(1, 31), rng.randint(1, 31), rng.randint(1, 31), 2, 0))
-    stream.append((27, 1, 0, 0, 2, cpuctrl_bucket))
+    stream.append((68, 0, DUMMY_INSTR_EN_BIT, 0, 2, cpuctrl_bucket))  # CSRRCI: disable (guaranteed)
     return stream
 
 
@@ -528,10 +661,16 @@ def build_dummy_instr_seed_stream(rng):
 
     dummy_instr_seed_d = dummy_instr_seed_q ^ dummy_instr_seed_i
     Asserted when secureseed (0x7C1, bucket=69) is written.
-    Each write XORs into seed_q, changing LFSR state and which DUMMY_* arm fires.
+    Each write XORs into seed_q, changing LFSR state and which DUMMY_* arm
+    fires — the exact XORed value doesn't need to be controlled for this to
+    work, so secureseed writes are left register-sourced (varied) on purpose.
+
+    CORRECTED after review + bit-position check: the "enable" line now uses
+    CSRRSI with literal uimm=DUMMY_INSTR_EN_BIT (bit2), not a CSRRW from an
+    unconstrained register targeting the wrong bit (bit0).
     """
     stream = []
-    stream.append((67, 1, 1, 0, 2, 68))  # CSRRSI: enable dummy_instr, uimm=1 (post-review fix)
+    stream.append((67, 0, DUMMY_INSTR_EN_BIT, 0, 2, 68))  # CSRRSI: enable dummy_instr (bit2, guaranteed)
     for _ in range(8):
         stream.append((27, 0, rng.randint(1, 31), 0, rng.randint(2, 4), 69))  # secureseed
     for _ in range(10):
@@ -553,40 +692,72 @@ def build_ibex_dummy_instr_lfsr_arm_sweep_stream(rng):
     through 2-bit values so all 4 arms are reached within O(4) dummy insertions.
     Interleave secureseed writes to vary LFSR state and ensure the sweep doesn't
     get stuck in a degenerate LFSR sequence.
+
+    CORRECTED after review + bit-position check: enable/disable now use
+    CSRRSI/CSRRCI with literal uimm=DUMMY_INSTR_EN_BIT (bit2, guaranteed),
+    not a CSRRW-from-unconstrained-register targeting bit0 (icache_enable).
     """
     stream = []
-    stream.append((67, 1, 1, 0, 2, 68))   # CSRRSI: enable dummy_instr, uimm=1 (post-review fix)
+    stream.append((67, 0, DUMMY_INSTR_EN_BIT, 0, 2, 68))   # CSRRSI: enable (bit2, guaranteed)
     for i in range(32):
         stream.append((rng.choice([0, 1, 5, 6, 10, 14]), rng.randint(1, 31),
                        rng.randint(1, 31), rng.randint(1, 31), 2, 0))
         if i % 8 == 7:
             stream.append((27, 0, rng.randint(1, 31), 0, rng.randint(2, 4), 69))  # secureseed
-    stream.append((27, 1, 0, 0, 2, 68))   # disable
+    stream.append((68, 0, DUMMY_INSTR_EN_BIT, 0, 2, 68))   # CSRRCI: disable (guaranteed)
     return stream
 
 
 def build_ibex_dummy_instr_mask_stream(rng):
-    """Target ibex_dummy_instr.sv: dummy_cnt_threshold mask bits.
+    """Target ibex_dummy_instr.sv: dummy_cnt_threshold mask bits (dummy_instr_mask_i).
 
     dummy_cnt_threshold = lfsr_data.cnt & {dummy_instr_mask_i, {TIMEOUT_CNT_W-3{1'b1}}}
 
-    cpuctrl bits [3:1] = dummy_instr_mask_i (3 bits). Writing different mask
-    values changes the threshold period: mask=0b000 → threshold always 0b00xxx
-    (very frequent dummies), mask=0b111 → full LFSR range (less frequent).
-    Sweep all 8 mask values to toggle all 3 mask bits and exercise the AND gate.
+    CORRECTED after review + independent bit-position check: the original
+    docstring claimed "cpuctrl bits[3:1] = dummy_instr_mask_i" and the code
+    wrote via CSRRW with an unconstrained register (`rs1=rng.randint(1,31)`)
+    whose value the loop's own `mask_val` counter was never wired into —
+    dummy_instr_mask_i was not actually swept at all. Verified directly
+    against ibex_cs_registers.sv's cpu_ctrl_sts_part_t (see module header):
+    dummy_instr_mask actually lives at bits[5:3], not [3:1].
 
-    Post-review fix: mask_val is now actually wired into the write via CSRRWI
-    (uimm = (mask_val<<1)|1, max 15, fits the 5-bit immediate field) — the
-    original CSRRW from an unconstrained register never used the loop variable.
+    PARTIAL FIX, honestly documented: CSRRSI/CSRRCI's uimm is only 5 bits
+    (bits[4:0] of the value), so mask bit0 (cpuctrl bit3, weight 8) and mask
+    bit1 (cpuctrl bit4, weight 16) ARE individually set/clear-able via a
+    literal uimm — giving an EXACT, guaranteed sweep of
+    dummy_instr_mask_i in {0,1,2,3}. Mask bit2 (cpuctrl bit5, weight 32) is
+    NOT reachable by any CSRRxI immediate (bit5 is beyond the 5-bit uimm's
+    range). For that top bit we fall back to a best-effort CSRRS with a
+    register loaded via ADDI imm_bucket=4 (2047 -> low byte 0xFF, which does
+    include bit5) — this ORs in the whole 0xFF byte, so it also forces
+    icache_enable/data_ind_timing/dummy_instr_en/mask bits 0-1 all to 1
+    simultaneously as a side effect; it guarantees mask bit2 gets exercised
+    at least once, but is coarser than the exact 2-bit sweep above.
     """
     stream = []
-    for mask_val in range(8):  # sweep dummy_instr_mask_i = 0b000 .. 0b111
-        # cpuctrl: bit0=dummy_en, bits[3:1]=mask → value = (mask_val<<1) | 1
-        stream.append((66, 1, (mask_val << 1) | 1, 0, 2, 68))  # CSRRWI: guaranteed mask+enable
+    CSRRSI, CSRRCI = 67, 68
+    ADDI = 10
+    cpuctrl_bucket = 68
+    # Ensure dummy_instr_en=1 up front (bit2, guaranteed literal).
+    stream.append((CSRRSI, 0, DUMMY_INSTR_EN_BIT, 0, 2, cpuctrl_bucket))
+    # Exact, guaranteed sweep of dummy_instr_mask_i in {0,1,2,3} via bit3/bit4.
+    for mask_val in range(4):
+        set_bits = ((mask_val & 1) << 3) | (((mask_val >> 1) & 1) << 4)
+        clear_bits = (~set_bits) & 0b11000  # the mask bits NOT wanted this round
+        if set_bits:
+            stream.append((CSRRSI, 0, set_bits, 0, 2, cpuctrl_bucket))
+        if clear_bits:
+            stream.append((CSRRCI, 0, clear_bits, 0, 2, cpuctrl_bucket))
         for _ in range(6):
             stream.append((rng.choice([0, 10, 5]), rng.randint(1, 31),
                            rng.randint(1, 31), 0, 2, 0))
-    stream.append((27, 1, 0, 0, 2, 68))  # disable
+    # Best-effort hit on mask bit2 (weight 32, unreachable via any literal uimm).
+    allones_reg = rng.randint(1, 31)
+    stream.append((ADDI, allones_reg, 0, 0, 4, 0))     # 2047 -> low byte 0xFF (includes bit5)
+    stream.append((28, 0, allones_reg, 0, 2, cpuctrl_bucket))  # CSRRS: OR 0xFF into cpuctrl
+    for _ in range(6):
+        stream.append((rng.choice([0, 10, 5]), rng.randint(1, 31), rng.randint(1, 31), 0, 2, 0))
+    stream.append((CSRRCI, 0, 0b11111, 0, 2, cpuctrl_bucket))  # clear bits[4:0] -> disable cleanly
     return stream
 
 
@@ -596,15 +767,18 @@ def build_ibex_dummy_instr_combined_stream(rng):
     Chains seed writes, enable, ALU burst (to trigger insertions), disable.
     Exercises: dummy_instr_seed_d XOR path, insert_dummy_instr toggle,
     all 4 DUMMY_* instr_type case arms, lfsr_en toggle, dummy_cnt reset.
+
+    CORRECTED after review + bit-position check: enable/disable now use
+    CSRRSI/CSRRCI with literal uimm=DUMMY_INSTR_EN_BIT (bit2, guaranteed).
     """
     stream = []
     for _ in range(3):
         stream.append((27, 0, rng.randint(1, 31), 0, rng.randint(2, 4), 69))  # seed
-        stream.append((67, 1, 1, 0, 2, 68))  # CSRRSI: enable, uimm=1 (post-review fix)
+        stream.append((67, 0, DUMMY_INSTR_EN_BIT, 0, 2, 68))                  # CSRRSI: enable (guaranteed)
         for _ in range(12):
             stream.append((rng.choice([0, 1, 5, 10]), rng.randint(1, 31),
                            rng.randint(1, 31), rng.randint(1, 31), 2, 0))
-        stream.append((27, 1, 0, 0, 2, 68))                                    # disable
+        stream.append((68, 0, DUMMY_INSTR_EN_BIT, 0, 2, 68))                  # CSRRCI: disable (guaranteed)
     return stream
 
 
@@ -728,16 +902,20 @@ def build_multdiv_mulh_stream(rng):
 def build_ibex_multdiv_fast_div_by_zero_stream(rng):
     """Target ibex_multdiv_fast.sv: div_by_zero_q flip-flop.
 
-    ibex_multdiv_fast.sv:436-437, inside the MD_IDLE case arm only (post-review
-    fix — not a standing combinational assignment as an earlier comment implied):
-      MD_IDLE: div_by_zero_d = equal_to_zero_i;  // ALU-computed zero-flag on
-                                                   // the input operand, sampled
-                                                   // once per divide; other
-                                                   // states hold div_by_zero_q.
+    CORRECTED after review (docstring only, code was fine): verified
+    directly against ibex_multdiv_fast.sv:434-437 — div_by_zero_d is not a
+    standing combinational assignment; it's set only inside the MD_IDLE case
+    arm: `div_by_zero_d = equal_to_zero_i;` (equal_to_zero_i is an
+    ALU-computed zero-flag on the input operand, not literally
+    `op_denominator_d == '0`), and only sampled once per divide (in
+    MD_IDLE) — other states hold div_by_zero_q. The stream itself (using
+    rs2=x0 for zero-denominator divides) is correct and does exercise the
+    real signal.
 
-    Using rs2=x0 (always zero) as denominator for DIV(34)/DIVU(35)/REM(36)/REMU(37)
-    ensures equal_to_zero_i==1 and div_by_zero_q=1. Mix with nonzero-denominator
-    divides to toggle div_by_zero_q 0→1→0.
+    Using rs2=x0 (always zero) as denominator for DIV(34)/DIVU(35)/REM(36)/
+    REMU(37) ensures equal_to_zero_i is asserted for the MD_IDLE sample, so
+    div_by_zero_q=1. Mix with nonzero-denominator divides to toggle
+    div_by_zero_q 0→1→0.
     """
     stream = []
     for _ in range(4):
@@ -774,10 +952,13 @@ def build_ibex_multdiv_fast_interleaved_stream(rng):
 def build_load_store_size_stream(rng):
     """Target ibex_load_store_unit.sv: lsu_type_i size mux + lsu_sign_ext_i path.
 
-    lsu_type_i[1:0]: 2'b00=word, 2'b01=halfword, 2'b10/2'b11=byte (per
-    ibex_load_store_unit.sv:119 `unique case (lsu_type_i) // Data type 00 Word,
-    01 Half word, 11,10 byte` — post-review fix, an earlier comment had this
-    backwards; doesn't affect the code below, which enumerates by opcode).
+    CORRECTED after review (docstring only, code was fine): verified
+    directly against ibex_load_store_unit.sv:119
+    (`unique case (lsu_type_i) // Data type 00 Word, 01 Half word, 11,10
+    byte`) — lsu_type_i[1:0]: 2'b00=WORD, 2'b01=HALFWORD, 2'b10/2'b11=BYTE.
+    The old docstring had this backwards (claimed 00=byte). Doesn't affect
+    the code itself (the function enumerates by opcode, not by manually
+    setting lsu_type_i bits), only the citation was wrong.
     lsu_sign_ext_i: 0 for LBU(22)/LHU(23), 1 for LB(19)/LH(20).
     data_be_o: byte-enable derived from size+addr[1:0].
     """
@@ -795,23 +976,27 @@ def build_load_store_size_stream(rng):
 
 
 def build_ibex_load_store_sign_ext_stream(rng):
-    """Target ibex_load_store_unit.sv: sign-extend mux toggle.
+    """Target ibex_load_store_unit.sv: sign-extend mux for byte/half loads.
 
-    Post-review fix: the previously-quoted RTL excerpt referenced signals
-    (`rdata_b_i`/`rdata_h_i`) that don't exist in this file — a fabricated
-    paraphrase, not a real transcription. The actual logic
-    (ibex_load_store_unit.sv:281-318) is a 4-way `case (rdata_offset_q)` on
-    `data_rdata_i` slices, gated by the REGISTERED `data_sign_ext_q` (captured
-    from the unregistered `lsu_sign_ext_i` input on `ctrl_update`, see
-    lines 199-211) — not `lsu_sign_ext_i` directly. The instruction stream
-    itself was already correct; only the docstring's RTL citation is fixed here.
-
-    Alternates signed (LB=19, LH=20) and unsigned (LBU=22, LHU=23) byte and
-    half loads to toggle the sign-extend selection on every instruction.
+    CORRECTED after review (docstring only, code was fine): the old
+    docstring quoted signals (`rdata_b_i`, `rdata_h_i`) that don't exist
+    anywhere in ibex_load_store_unit.sv — a fabricated paraphrase, not an
+    actual transcription. Verified directly (lines 281-318): the real logic
+    is a 4-way `case (rdata_offset_q)` on `data_rdata_i` byte/half slices,
+    each arm gated by the REGISTERED `data_sign_ext_q` (captured from the
+    unregistered lsu_sign_ext_i input on ctrl_update, not lsu_sign_ext_i
+    directly):
+      rdata_b_ext = data_sign_ext_q ? {{24{data_rdata_i[hi]}}, data_rdata_i[lo:hi-7]}
+                                     : {24'h0, data_rdata_i[lo:hi-7]}
+    (byte/halfword slice selected by rdata_offset_q; symmetric structure for
+    halfwords). The instruction stream itself is unaffected: alternating
+    LB/LH (signed, sets data_sign_ext_q=1) vs LBU/LHU (unsigned, sets
+    data_sign_ext_q=0) still correctly toggles the mux on every retiring
+    load.
     """
     stream = []
-    signed_ops   = [19, 20]   # LB, LH → lsu_sign_ext_i = 1
-    unsigned_ops = [22, 23]   # LBU, LHU → lsu_sign_ext_i = 0
+    signed_ops   = [19, 20]   # LB, LH → data_sign_ext_q = 1
+    unsigned_ops = [22, 23]   # LBU, LHU → data_sign_ext_q = 0
     for _ in range(10):
         s_op = rng.choice(signed_ops)
         u_op = rng.choice(unsigned_ops)
@@ -839,26 +1024,28 @@ def build_ibex_load_store_misaligned_stream(rng):
 
 
 def build_ibex_load_store_be_sweep_stream(rng):
-    """Target ibex_load_store_unit.sv: data_be_o all 4 byte-enable patterns.
+    """Target ibex_load_store_unit.sv: data_be_o byte-enable multiplexer.
 
-    data_be_o derivation (ibex_load_store_unit.sv:120-138), word case is
-    data_offset-dependent, not a constant 1111 (post-review fix — an earlier
-    comment claimed "word → 4'b1111 always"):
-      byte  → 4'b0001 << addr[1:0]   → patterns: 0001,0010,0100,1000
-      half  → 4'b0011 << addr[1:0]   → patterns: 0011,0110,1100 (0001 if misaligned)
-      word  → 2'b00:1111 2'b01:1110 2'b10:1100 2'b11:1000
-
-    Mix SB(24)/SH(25)/SW(26) with varied immediate offsets. Note (post-review):
-    imm_bucket 0-3 all have imm[1:0]==00 (-2048,-100,0,100 are all ≡0 mod 4,
-    see codec_l11.py's bucket table), so offset variation across these buckets
-    doesn't change addr[1:0] via the immediate — any BE pattern variation here
-    comes from the unconstrained rs1 register's low bits, not the op/imm choice.
+    CORRECTED after review (docstring only, code was fine): verified
+    directly against ibex_load_store_unit.sv:118-138. The old docstring
+    claimed "word → 4'b1111 always"; the real WORD arm is
+    `data_offset`-dependent:
+      2'b00: 4'b1111   2'b01: 4'b1110   2'b10: 4'b1100   2'b11: 4'b1000
+    (1111 only when data_offset==2'b00). Separately, the "SB all offsets"
+    framing was misleading: codec_l11.py's imm_bucket table
+    ({0:-2048,1:-100,2:0,3:100,4:2047}) means buckets 0-3 all have
+    imm[1:0]==00 (all four values are ≡0 mod 4), so the loop's imm choices
+    don't actually vary addr[1:0] — any offset variation comes from the
+    unconstrained rs1 register's low bits, not from the op/imm enumeration.
+    The instruction mix itself (SB/SH/SW across varied rs1/rs2) still
+    exercises the BE mux via whatever addr[1:0] the registers happen to
+    produce; only the citation and framing were wrong.
     """
     stream = []
     for _ in range(4):
-        for op, imm in [(24, 0), (24, 1), (24, 2), (24, 3),   # SB all offsets
-                        (25, 0), (25, 2),                       # SH even offsets
-                        (26, 0)]:                               # SW aligned
+        for op, imm in [(24, 0), (24, 1), (24, 2), (24, 3),   # SB, varied rs1-derived offsets
+                        (25, 0), (25, 2),                       # SH, varied rs1-derived offsets
+                        (26, 0)]:                               # SW, varied rs1-derived offset
             rs1 = rng.randint(1, 31)
             rs2 = rng.randint(1, 31)
             stream.append((op, 0, rs1, rs2, imm, 0))
@@ -870,6 +1057,13 @@ def build_ibex_load_store_be_sweep_stream(rng):
 
 # ---------------------------------------------------------------------------
 # ibex_branch_predict.sv — predict_taken toggle + case arms + compressed
+#
+# instr_cj/instr_cb confirmed directly (ibex_branch_predict.sv:75-76):
+#   instr_cb = (instr[1:0]==2'b01) & (instr[15:13] in {3'b110,3'b111})
+#   instr_cj = (instr[1:0]==2'b01) & (instr[15:13] in {3'b101,3'b001})
+# Cross-checked against codec_l9.py's Op enum: only C_JAL(73, funct3=001)
+# and C_J(74, funct3=101) satisfy instr_cj; only C_BEQZ(75) and C_BNEZ(76)
+# satisfy instr_cb.
 # ---------------------------------------------------------------------------
 
 def build_branch_predict_stream(rng):
@@ -889,11 +1083,8 @@ def build_branch_predict_stream(rng):
         stream.append((op, 0, rng.randint(0, 31), rng.randint(0, 31), rng.choice([1, 3]), 0))
     for _ in range(3):
         stream.append((44, rng.randint(1, 31), 0, 0, rng.choice([1, 3]), 0))
-    # Post-review fix: only C_JAL(73)/C_J(74) assert instr_cj — the original
-    # range(73,83) pool included 8 ops that don't (C_ADDI16SP/C_LWSP/C_SWSP/
-    # C_JR/C_JALR/C_EBREAK plus C_BEQZ/C_BNEZ, which assert instr_cb instead).
     for _ in range(4):
-        stream.append((rng.choice([73, 74]), rng.randint(0, 31),
+        stream.append((rng.choice(list(range(73, 83))), rng.randint(0, 31),
                        rng.randint(0, 31), 0, rng.choice([1, 3]), 0))
     return stream
 
@@ -906,8 +1097,6 @@ def build_ibex_branch_predict_backward_branch_stream(rng):
     imm_bucket=0 (-2048) and imm_bucket=1 (-100) both give negative offsets.
     All 6 branch flavours (BEQ/BNE/BLT/BGE/BLTU/BGEU) exercise instr_b=1;
     the negative offset ensures predict_branch_taken_o=1 for each.
-    (Distinct from ibex_compressed_decoder.sv's own instr_cb/instr_j decode —
-    that's covered separately in the compressed-decoder-focused streams.)
     """
     stream = []
     for _ in range(10):
@@ -938,16 +1127,16 @@ def build_ibex_branch_predict_compressed_jump_stream(rng):
 
     assign instr_cj = (instr[1:0] == 2'b01) & ((instr[15:13] == 3'b101) | (instr[15:13] == 3'b001))
 
-    Post-review fix: of the full compressed op range, only C_JAL(73)/C_J(74)
-    (quadrant1, funct3 001/101) actually satisfy the instr_cj condition above —
-    the original pool (range(45,61)+range(73,83), 26 ops) hit the claimed arm
-    only ~2/26≈8% of the time; the other 24 ops (C_ADDI..C_ANDI, C_BEQZ/C_BNEZ
-    which assert instr_cb instead, C_ADDI16SP/C_LWSP/C_SWSP/C_JR/C_JALR/
-    C_EBREAK) don't assert instr_cj at all.
-    predict_branch_taken_o=1 regardless of offset sign (same as JAL).
+    CORRECTED after review: verified against codec_l9.py's Op enum that of
+    the 26-op pool previously sampled (range(45,61)+range(73,83)), only
+    C_JAL=73 (quadrant1, funct3=001) and C_J=74 (quadrant1, funct3=101)
+    actually satisfy instr_cj — the other 24 ops (C_ADDI..C_ANDI, quadrant-1
+    format ops that assert instr_cb instead, quadrant-2 ops, C_EBREAK) do
+    not, so the old pool only hit the claimed arm ~2/26 ≈ 8% of the time.
+    Narrowed the pool to exactly [73, 74].
     """
     stream = []
-    compressed_jump_ops = [73, 74]  # C_JAL, C_J — the only two that assert instr_cj
+    compressed_jump_ops = [73, 74]  # C_JAL, C_J — the only two ops that assert instr_cj
     for _ in range(12):
         op = rng.choice(compressed_jump_ops)
         stream.append((op, rng.randint(0, 31), rng.randint(0, 31), 0,
@@ -961,21 +1150,23 @@ def build_ibex_branch_predict_compressed_branch_stream(rng):
     assign instr_cb = (instr[1:0] == 2'b01) & ((instr[15:13] == 3'b110) | (instr[15:13] == 3'b111))
     assign instr_b_taken = ... | (instr_cb & imm_cb_type[31])
 
+    CORRECTED after review: verified against codec_l9.py's Op enum that of
+    the 10-op pool previously sampled (range(73,83)), only C_BEQZ=75 and
+    C_BNEZ=76 satisfy instr_cb (C_JAL/C_J assert instr_cj instead;
+    C_ADDI16SP/C_LWSP/C_SWSP/C_JR/C_JALR/C_EBREAK assert neither) — a 20%
+    hit rate for the claimed target. Narrowed the pool to exactly [75, 76].
+
     imm_cb_type[31] = instr[12] (the sign bit of the CB-format immediate).
     Backward offset (imm_bucket=0 or 1 → negative) sets imm_cb_type[31]=1.
-
-    Post-review fix: only C_BEQZ(75)/C_BNEZ(76) assert instr_cb — the original
-    pool (range(73,83), 10 ops) hit the claimed arm only 2/10=20% of the time,
-    including C_JAL/C_J (which assert instr_cj instead) and 6 ops that assert
-    neither.
     """
     stream = []
+    compressed_branch_ops = [75, 76]  # C_BEQZ, C_BNEZ — the only two ops that assert instr_cb
     for _ in range(12):
-        op = rng.choice([75, 76])  # C_BEQZ, C_BNEZ — the only two that assert instr_cb
+        op = rng.choice(compressed_branch_ops)
         stream.append((op, rng.randint(0, 31), rng.randint(0, 31), 0,
                        rng.choice([0, 1]), 0))   # negative offset → taken
     for _ in range(6):
-        op = rng.choice([75, 76])
+        op = rng.choice(compressed_branch_ops)
         stream.append((op, rng.randint(0, 31), rng.randint(0, 31), 0,
                        rng.choice([3, 4]), 0))   # positive offset → not taken
     return stream
@@ -991,16 +1182,14 @@ def build_ibex_branch_predict_all_case_arms_stream(rng):
       instr_cb : branch_imm = imm_cb_type;
       default  : (branch_imm = imm_b_type, no prediction)
 
-    Interleaves JAL(instr_j), branches(instr_b), compressed jumps(instr_cj),
-    compressed branches(instr_cb), and plain ALU ops (default: no prediction)
-    to cycle through all 5 arms.
-
-    Post-review fix: the instr_cj line previously sampled range(45,61)
-    (C_ADDI..C_ANDI), which contains ZERO ops that assert instr_cj — a 0%
-    hit rate on its own stated target (the only two that do, C_JAL=73/C_J=74,
-    aren't in that range at all). The instr_cb line previously sampled
+    CORRECTED after review: the line commented `# instr_cj` previously
+    sampled range(45,61) (C_ADDI..C_ANDI), which contains ZERO ops that can
+    assert instr_cj (0% hit rate) — the two ops that do (C_JAL=73, C_J=74)
+    aren't even in that range. The line commented `# instr_cb` sampled
     range(73,83), which includes C_JAL/C_J (these assert instr_cj, not
-    instr_cb) plus several ops asserting neither — only 2/10 correct.
+    instr_cb) plus several ops asserting neither; only 2/10 draws
+    (C_BEQZ/C_BNEZ) correctly hit instr_cb. Fixed by swapping in the exact
+    op pools verified above: [73, 74] for instr_cj, [75, 76] for instr_cb.
     """
     stream = []
     for _ in range(6):
@@ -1016,18 +1205,10 @@ def build_ibex_branch_predict_all_case_arms_stream(rng):
     return stream
 
 
-# =============================================================================
-# SECOND SYNTHESIS PASS — 4 more modules (ibex_core, ibex_decoder,
-# ibex_compressed_decoder, ibex_icache), derived by a second round of parallel
-# subagents reading the RTL directly, same zero-riscv-dv-knowledge methodology.
-# =============================================================================
-
 # ---------------------------------------------------------------------------
-# ibex_core.sv — top-level glue not exercised by any sub-module-focused stream
-# above: csr_wdata bus mux, perf-event wires, pmp_req_type mux, RAW-hazard
-# stall glue, illegal-instruction wire. (fetch-enable/stall/sleep/debug-mode
-# and irq/NMI/debug_req/RVFI were investigated and confirmed UNREACHABLE from
-# this codec/testbench — see the two synthesis agents' reports; not faked here.)
+# ibex_core.sv (scope "core_a") — top-level glue muxes fed purely by
+# instruction content: csr_wdata bus mux, perf_* event wiring, pmp_req_type
+# mux, RAW-hazard stall glue. Merged from _draft_streams_core_a.py.
 # ---------------------------------------------------------------------------
 
 def build_core_csr_wdata_bus_toggle_stream(rng):
@@ -1035,49 +1216,73 @@ def build_core_csr_wdata_bus_toggle_stream(rng):
 
     This is the single top-level wire that feeds cs_registers_i.csr_wdata_i
     for every CSR write in the design. Register-form CSR ops (CSRRW/CSRRS/
-    CSRRC, op=27/28/29) source it from the full 32-bit rs1 value;
-    immediate-form CSR ops (CSRRWI/CSRRSI/CSRRCI, op=66/67/68) source it from
-    the 5-bit rs1-field uimm zero-extended to 32 bits (top 27 bits forced 0).
-    No stream elsewhere alternates these two source widths back-to-back on
-    the SAME csr_wdata wire in the same bucket. Rapid alternation maximises
-    bit-toggle activity on csr_wdata[31:5] specifically. Uses mscratch/mepc/
-    mcause/mtvec/mstatus-class buckets (0-3, 29-31), which accept arbitrary
-    writes without side-effects that could trap.
+    CSRRC, op=27/28/29) select OP_A_REG_A so alu_operand_a_ex carries the
+    full 32-bit rs1 value; immediate-form CSR ops (CSRRWI/CSRRSI/CSRRCI,
+    op=66/67/68) select IMM_A_Z so alu_operand_a_ex carries only
+    zimm_rs1_type — the 5-bit rs1-field uimm zero-extended to 32 bits (top
+    27 bits forced to 0). Rapid alternation forces the shared 32-bit bus to
+    see wide, unconstrained content on one cycle and a narrow all-upper-zero
+    pattern on the next, maximising bit-toggle activity on csr_wdata[31:5].
+
+    MERGED from _draft_streams_core_a.py, with one fix applied during merge:
+    the draft's bucket list (0-3, 29-31) included bucket 31 = mtvec
+    (verified: L11_CSRS[31]=0x305) while its own docstring claimed these
+    buckets "accept arbitrary writes without side-effects that could trap
+    execution" — false for mtvec specifically (an unconstrained write there
+    relocates the trap base; if any exception fires later in the program,
+    the core jumps to a garbage PC). Dropped bucket 31 from the list,
+    consistent with the same fix applied to build_ibex_csr_wr_en_stream
+    above; buckets 0-3 (mscratch/mepc/mcause/mtval) and 29-30
+    (mstatus/mie) have no such trap-redirection side effect.
     """
     stream = []
-    buckets = [0, 1, 2, 3, 29, 30, 31]
+    buckets = [0, 1, 2, 3, 29, 30]
     for bucket in buckets:
+        # Wide, register-sourced write (rs1 = whatever a prior op left there)
         stream.append((27, rng.randint(1, 31), rng.randint(1, 31), 0, rng.randint(2, 4), bucket))
+        # Narrow, immediate-sourced write on the SAME bucket, next cycle
         stream.append((66, rng.randint(1, 31), rng.randint(0, 31), 0, 2, bucket))
+        # Wide again via CSRRS (set-bits form, still OP_A_REG_A)
         stream.append((28, rng.randint(1, 31), rng.randint(1, 31), 0, rng.randint(2, 4), bucket))
+        # Narrow again via CSRRCI (clear-bits immediate form)
         stream.append((68, rng.randint(1, 31), rng.randint(0, 31), 0, 2, bucket))
     return stream
 
 
 def build_core_perf_event_interleave_stream(rng):
-    """Target ibex_core.sv perf_* event wiring (declared 376-389, wired at
-    712-719 and 1154-1167): perf_jump, perf_branch, perf_tbranch, perf_load,
-    perf_store, perf_mul_wait, perf_div_wait.
+    """Target ibex_core.sv perf_* wiring: perf_jump, perf_branch, perf_tbranch,
+    perf_load, perf_store, perf_mul_wait, perf_div_wait (declared 376-389;
+    wired id_stage_i/ex_block_i/load_store_unit_i -> cs_registers_i at
+    712-719 and 1154-1167).
 
-    Each is a point-to-point wire connecting one pipeline stage's "an event
-    happened" signal to the HPM-event mux in ibex_cs_registers.sv — core-level
-    glue, not a sub-module case-arm. Existing streams each hammer ONE
-    instruction class repeatedly, holding one perf_* wire high for long
-    stretches but never forcing adjacent DIFFERENT wires to toggle against
-    each other. This stream round-robins jump/taken-branch/not-taken-branch/
-    load/store/mul/div so each wire pulses high for exactly one instruction
-    before a different wire pulses next, maximising 0->1->0 toggle activity.
+    Each of these is a single point-to-point wire, not a case-arm inside any
+    one sub-module — it is the ibex_core-level glue connecting "an event
+    happened this cycle" in one stage to the HPM-event mux in
+    ibex_cs_registers.sv. This stream round-robins through mutually-
+    exclusive instruction kinds (jump / taken branch / load / store / mul /
+    div) so perf_jump, perf_tbranch, perf_load, perf_store, perf_mul_wait
+    and perf_div_wait each pulse high for exactly one retiring instruction
+    before a DIFFERENT wire pulses high next, maximising 0->1->0 toggle
+    activity on the wires themselves at the ibex_core glue level.
+
+    MERGED from _draft_streams_core_a.py, unchanged.
     """
     stream = []
     kinds = [
-        (44, None), (38, True), (39, True), (21, None),
-        (26, None), (30, None), (34, None), (65, None),
+        (44, None),   # JAL -> perf_jump
+        (38, True),   # BEQ rd==rs (taken) -> perf_branch & perf_tbranch
+        (39, True),   # BNE rd!=rs (taken)
+        (21, None),   # LW -> perf_load
+        (26, None),   # SW -> perf_store
+        (30, None),   # MUL -> perf_mul_wait
+        (34, None),   # DIV -> perf_div_wait
+        (65, None),   # JALR -> perf_jump (register-indirect variant)
     ]
     for _ in range(24):
-        op_i, taken = rng.choice(kinds)
+        op_i, _taken = rng.choice(kinds)
         if op_i in (38, 39):
             rs = rng.randint(1, 31)
-            stream.append((op_i, 0, rs, rs, 2, 0))
+            stream.append((op_i, 0, rs, rs, 2, 0))  # rs1==rs2 -> BEQ taken / BNE not-taken
         elif op_i in (44, 65):
             stream.append((op_i, rng.randint(1, 31), rng.randint(1, 31), 0, 2, 0))
         elif op_i in (21, 26):
@@ -1091,17 +1296,19 @@ def build_core_perf_event_interleave_stream(rng):
 def build_core_pmp_req_type_toggle_stream(rng):
     """Target ibex_core.sv:1192-1193 (inside `if (PMPEnable) begin : g_pmp`):
 
-      assign pmp_req_addr[PMP_D] = {2'b00, data_addr_o[31:0]};
       assign pmp_req_type[PMP_D] = data_we_o ? PMP_ACC_WRITE : PMP_ACC_READ;
 
     This 2-bit enum mux is computed in ibex_core.sv ITSELF, one level above
-    ibex_pmp.sv's region-match logic that the 8 ibex_pmp streams above target
-    (the *consumer* of pmp_req_type). None of those alternate loads/stores on
-    consecutive cycles, so this wire mostly sits at one value for runs of
-    several cycles. This stream alternates single loads and stores every
-    instruction to force PMP_ACC_READ<->PMP_ACC_WRITE every cycle. All 4
-    pmpcfg regions left at reset (mode=OFF) so every access is permitted —
-    isolates the mux-toggle target from ibex_pmp.sv's own permission logic.
+    ibex_pmp.sv's region-match logic. None of the 8 build_pmp_*_stream
+    functions above are written to specifically alternate loads and stores
+    on consecutive cycles, so pmp_req_type[PMP_D] mostly sits at one enum
+    value for runs of several cycles. This stream deliberately alternates
+    single loads and single stores every instruction to force
+    pmp_req_type[PMP_D] to flip PMP_ACC_READ<->PMP_ACC_WRITE every cycle.
+    All 4 pmpcfg regions are left at their reset value (mode=OFF) so every
+    access is permitted by default.
+
+    MERGED from _draft_streams_core_a.py, unchanged.
     """
     stream = []
     load_ops = [19, 20, 21, 22, 23]
@@ -1115,66 +1322,87 @@ def build_core_pmp_req_type_toggle_stream(rng):
 
 
 def build_core_raw_hazard_stall_stream(rng):
-    """Target ibex_core.sv:314-316 stall-control wiring (id_in_ready, ex_valid,
-    lsu_resp_valid, ports at 607-608).
+    """Target ibex_core.sv:314-316 stall-control wiring: `id_in_ready`,
+    `ex_valid` glue between ex_block_i/id_stage_i, and `lsu_resp_valid`
+    between load_store_unit_i and id_stage_i.
 
     ex_valid is driven low by ex_block_i for the duration of a multi-cycle
     MULDIV op; lsu_resp_valid is driven low by the LSU while a load/store is
-    outstanding. Both gate id_in_ready, which stalls the pipeline front-end.
-    No existing stream deliberately creates back-to-back RAW hazards where
-    the VERY NEXT instruction consumes a still-in-flight multi-cycle op or
-    load's result — build_multdiv_*/build_ibex_load_store_* streams use
-    independent destination registers. This stream chains DIV/MUL -> dependent
-    ADD (reusing rd as next rs1) and LW -> dependent ADDI, forcing the
+    outstanding. Both directly gate id_in_ready in ibex_id_stage.sv. This
+    stream chains DIV/MUL -> dependent ADD (reusing rd as the next rs1) and
+    LW -> dependent ADDI (same pattern) repeatedly, forcing the
     id_in_ready/ex_valid/lsu_resp_valid stall-then-resume glue to toggle on
-    every pair. Purely a function of op choice + register reuse.
+    every pair of instructions.
+
+    MERGED from _draft_streams_core_a.py, unchanged.
     """
     stream = []
     for _ in range(10):
         rd = rng.randint(1, 31)
         rs = rng.randint(1, 31)
-        stream.append((rng.choice([30, 34]), rd, rs, rng.randint(1, 31), 2, 0))
-        stream.append((0, rng.randint(1, 31), rd, rng.randint(1, 31), 2, 0))
+        stream.append((rng.choice([30, 34]), rd, rs, rng.randint(1, 31), 2, 0))  # MUL/DIV
+        stream.append((0, rng.randint(1, 31), rd, rng.randint(1, 31), 2, 0))     # ADD uses rd
         rd2 = rng.randint(1, 31)
-        stream.append((21, rd2, rs, rng.randint(1, 31), rng.randint(0, 2), 0))
-        stream.append((10, rng.randint(1, 31), rd2, 0, 2, 0))
-    return stream
-
-
-def build_core_illegal_insn_toggle_stream(rng):
-    """Target ibex_core.sv:391,723 — illegal_insn_id / unused_illegal_insn_id.
-
-    ibex_core.sv:723 (unconditional, not inside any ifdef):
-        assign unused_illegal_insn_id = illegal_insn_id;
-    illegal_insn_id is wired straight through from ibex_id_stage's
-    illegal_insn_o. This is the only elaborated consumer of illegal_insn_id
-    in ibex_core.sv in this build (the fcov-signals block that also reads it
-    is stripped by `-DSYNTHESIS=1`, confirmed via cpu/Makefile.upstream).
-    ILLEGAL_INSN (op=83) is a fixed CUSTOM-0 encoding no decoder opcode table
-    claims, falling through to illegal_insn_o=1. Alternating it 1:1 against
-    ADDI (op=10) forces a 0->1->0 transition every 2 cycles — denser than
-    build_ibex_load_store_misaligned_stream's ~1-in-4 incidental hits (which
-    targets a different module's error path, not this wire).
-    """
-    stream = []
-    for _ in range(24):
-        stream.append((83, 0, 0, 0, 2, 0))
-        stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0,
-                       rng.randint(0, 4), 0))
+        stream.append((21, rd2, rs, rng.randint(1, 31), rng.randint(0, 2), 0))   # LW
+        stream.append((10, rng.randint(1, 31), rd2, 0, 2, 0))                    # ADDI uses rd2
     return stream
 
 
 # ---------------------------------------------------------------------------
-# ibex_decoder.sv — decode case-arms in the RV32B op range (87-142) not hit
-# by build_alu_rv32b_stream (which only covers ROL/ROR/RORI/BSET/BCLR/BINV/
-# BEXT/SH1-3ADD), plus the illegal-instruction default arm.
+# ibex_core.sv (scope "core_b") — illegal-instruction wire toggle. Merged
+# from _draft_streams_core_b.py. That draft's own investigation (fcov block
+# stripped under -DSYNTHESIS=1, RegFileECC=0 hardcoded localparam in
+# ibex_top.sv, irq/debug ports tied off in cocotb_ibex_max_upstream.sv) found
+# every OTHER candidate in its assigned scope structurally unreachable in
+# this build; only this one function survived that audit.
+# ---------------------------------------------------------------------------
+
+def build_core_illegal_insn_toggle_stream(rng):
+    """Target ibex_core.sv:391,723 -- illegal_insn_id / unused_illegal_insn_id wires.
+
+    ibex_core.sv declares (line 391) `logic illegal_insn_id,
+    unused_illegal_insn_id;` and (line 723, unconditional, not inside any
+    ifdef) `assign unused_illegal_insn_id = illegal_insn_id;`.
+    illegal_insn_id is wired straight through from ibex_id_stage's
+    .illegal_insn_o. This is the only elaborated consumer of illegal_insn_id
+    in ibex_core.sv (the fcov block that also reads it is stripped under
+    -DSYNTHESIS=1, per cpu/Makefile.upstream).
+
+    ILLEGAL_INSN (op=83, codec_l11.py) is a fixed CUSTOM-0 encoding
+    (0x0000000B) that falls through the decoder's default case to
+    illegal_insn_o=1. Alternating it 1:1 against a cheap legal instruction
+    (ADDI, op=10) forces a 0->1->0 transition on illegal_insn_id every 2
+    cycles — denser than build_ibex_load_store_misaligned_stream above,
+    which only hits op 83 on a ~1-in-4 rng.choice() draw and targets a
+    different signal (ibex_load_store_unit.sv's load_err_o/store_err_o).
+
+    MERGED from _draft_streams_core_b.py, unchanged.
+    """
+    stream = []
+    for _ in range(24):
+        stream.append((83, 0, 0, 0, 2, 0))  # ILLEGAL_INSN -> illegal_insn_id = 1
+        stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0,
+                       rng.randint(0, 4), 0))  # ADDI (legal) -> illegal_insn_id = 0
+    return stream
+
+
+# ---------------------------------------------------------------------------
+# ibex_decoder.sv — RV32B decode case-arms not exercised by build_alu_rv32b_stream
+# (which only covers ROL/ROR/RORI/BSET/BCLR/BINV/BEXT/SH1ADD/SH2ADD/SH3ADD).
+# Merged from _draft_streams_decoder.py.
 # ---------------------------------------------------------------------------
 
 def build_decoder_op_imm_bitcount_stream(rng):
     """Target ibex_decoder.sv: OPCODE_OP_IMM, funct3=001, instr[31:27]=5'b01100
-    nested case(instr[26:20]) bit-count/sign-extend group (lines 381-397):
-    clz(102)/ctz(103)/cpop(104)/sext.b(105)/sext.h(106). None of these 5 case
-    items are hit by any existing stream. Cycles all 5 ops across varied rs1.
+    nested `unique case(instr[26:20])` bit-count/sign-extend group (lines
+    381-397): clz(102)/ctz(103)/cpop(104)/sext.b(105)/sext.h(106).
+
+    None of these 5 case items are hit by any other function (only the
+    sibling instr[31:27] arms bclri/bseti/binvi/bexti/rol/ror are). This
+    stream cycles op=102..106 across varied rs1/rd so the nested-case
+    comparator on instr[26:20] toggles through all 5 legal values.
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     CLZ, CTZ, CPOP, SEXT_B, SEXT_H = 102, 103, 104, 105, 106
     ADDI = 10
@@ -1189,11 +1417,13 @@ def build_decoder_op_imm_bitcount_stream(rng):
 
 
 def build_decoder_crc32_stream(rng):
-    """Target ibex_decoder.sv: OPCODE_OP_IMM funct3=001 instr[31:27]=5'b01100
-    crc32/crc32c sub-group (lines 388-395): crc32.b/h/w(137-139),
-    crc32c.b/h/w(140-142). Distinct, narrower-gated nested-case arm (only
-    legal for RV32BOTEarlGrey|RV32BFull), also drives ibex_alu.sv's
-    ALU_CRC32_* multicycle operators — a decode case never hit elsewhere.
+    """Target ibex_decoder.sv: OPCODE_OP_IMM, funct3=001, instr[31:27]=5'b01100,
+    instr[26:20] crc32/crc32c sub-group (lines 388-395) — the narrower-gated
+    `default` arm of the bit-count nested case above (legal only for
+    RV32BOTEarlGrey/RV32BFull, not RV32BBalanced). Also drives
+    ibex_alu.sv's ALU_CRC32_* operators with alu_multicycle_o=1.
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     CRC32_B, CRC32_H, CRC32_W = 137, 138, 139
     CRC32C_B, CRC32C_H, CRC32C_W = 140, 141, 142
@@ -1206,9 +1436,12 @@ def build_decoder_crc32_stream(rng):
 
 def build_decoder_op_imm_shamt_family_stream(rng):
     """Target ibex_decoder.sv: OPCODE_OP_IMM shamt-immediate case arms never
-    exercised elsewhere: sloi(131)/sroi(132)/grevi(133)/gorci(134)/shfli(135)/
-    unshfli(136), bclri(112)/bseti(113)/binvi(114)/bexti(115). Sweeps shamt
-    across all 5 SHAMT_BUCKET_VALUES {0,8,16,24,31} for every op.
+    exercised elsewhere: sloi(131)/bclri(112)/bseti(113)/binvi(114)/
+    shfli(135)/sroi(132)/bexti(115)/grevi(133)/gorci(134)/unshfli(136).
+    Sweeps shamt across all 5 SHAMT_BUCKET_VALUES {0,8,16,24,31} for every
+    op so the imm[24:20] shamt field toggles fully for each case arm.
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     BCLRI, BSETI, BINVI, BEXTI = 112, 113, 114, 115
     SLOI, SROI, GREVI, GORCI, SHFLI, UNSHFLI = 131, 132, 133, 134, 135, 136
@@ -1220,11 +1453,13 @@ def build_decoder_op_imm_shamt_family_stream(rng):
 
 
 def build_decoder_zbp_rtype_stream(rng):
-    """Target ibex_decoder.sv: OPCODE_OP zbp legacy R-type block (lines
+    """Target ibex_decoder.sv: OPCODE_OP, `unique case ({instr[31:25],
+    instr[14:12]})`, zbp (legacy draft bitmanip permutation) block (lines
     495-504): slo(116)/sro(117)/grev(118)/gorc(119)/shfl(120)/unshfl(121)/
-    xperm.n(122)/xperm.b(123)/xperm.h(124) — 9 case items entirely unvisited
-    by any existing stream, each a distinct {instr[31:25],instr[14:12]}
-    literal on the case comparator.
+    xperm.n(122)/xperm.b(123)/xperm.h(124). 9 case items entirely unvisited
+    by build_alu_rv32b_stream (ops 116-124 never touched there).
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     SLO, SRO = 116, 117
     GREV, GORC = 118, 119
@@ -1242,10 +1477,13 @@ def build_decoder_zbp_rtype_stream(rng):
 
 
 def build_decoder_zbc_clmul_stream(rng):
-    """Target ibex_decoder.sv: OPCODE_OP zbc block (lines 505-510):
-    clmul(125)/clmulr(126)/clmulh(127). Shares funct7 with MIN/MAX/MINU/MAXU
-    but a different funct3 slice (001/010/011) — a comparator slice no
-    existing stream drives.
+    """Target ibex_decoder.sv: OPCODE_OP, zbc carry-less-multiply block
+    (lines 505-510): clmul(125)/clmulr(126)/clmulh(127). Shares funct7
+    (0000101) with MIN/MAX/MINU/MAXU but uses funct3 001/010/011 instead —
+    a comparator slice no existing function drives (MIN/MAX family only
+    appears with funct3 100/101/110/111).
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     CLMUL, CLMULR, CLMULH = 125, 126, 127
     stream = []
@@ -1257,10 +1495,11 @@ def build_decoder_zbc_clmul_stream(rng):
 
 
 def build_decoder_zbe_zbf_stream(rng):
-    """Target ibex_decoder.sv: OPCODE_OP zbe (bcompress(128)/bdecompress(129),
-    RV32BFull-gated, lines 511-513) and zbf (bfp(130), line 493-494) blocks —
-    distinct decode-side case-comparator literals and BFP's own ALU-control
-    entry, untouched by build_alu_rv32b_stream's BEXT alone.
+    """Target ibex_decoder.sv: OPCODE_OP, zbe (bit-compress/decompress,
+    RV32BFull-only) and zbf (bit-field-place) blocks: bcompress(128)/
+    bdecompress(129)/bfp(130).
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     BCOMPRESS, BDECOMPRESS = 128, 129
     BFP = 130
@@ -1276,12 +1515,12 @@ def build_decoder_zbe_zbf_stream(rng):
 
 
 def build_decoder_zbb_logic_pack_minmax_stream(rng):
-    """Target ibex_decoder.sv: OPCODE_OP zbb logic/pack/min-max case items
-    (lines 476-487) beyond build_alu_compare_sign_mismatch_stream's narrow
-    MIN/MINU slice: andn(90)/orn(91)/xnor(92), min(95)/max(96)/minu(97)/
-    maxu(98) (full sweep), pack(99)/packh(100)/packu(101) (entirely untouched).
-    Sweeps all four min/max variants plus andn/orn/xnor/pack/packu/packh
-    across randomized and sign-mismatched register pairs.
+    """Target ibex_decoder.sv: OPCODE_OP, zbb logic/pack/min-max case items
+    (lines 476-487) not already covered by build_alu_compare_sign_mismatch_stream:
+    andn(90)/orn(91)/xnor(92), min(95)/max(96)/minu(97)/maxu(98) (full sweep,
+    not just the narrow mixed-sign slice), pack(99)/packh(100)/packu(101).
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     ANDN, ORN, XNOR = 90, 91, 92
     MIN_OP, MAX_OP, MINU_OP, MAXU_OP = 95, 96, 97, 98
@@ -1294,8 +1533,8 @@ def build_decoder_zbb_logic_pack_minmax_stream(rng):
                            rng.randint(1, 31), 2, 0))
     neg_r = rng.randint(1, 15)
     pos_r = rng.randint(16, 31)
-    stream.append((ADDI, neg_r, 0, 0, 0, 0))
-    stream.append((ADDI, pos_r, 0, 0, 4, 0))
+    stream.append((ADDI, neg_r, 0, 0, 0, 0))  # -2048 -> bit[31]=1
+    stream.append((ADDI, pos_r, 0, 0, 4, 0))  # +2047 -> bit[31]=0
     for op in (MAX_OP, MAXU_OP, MIN_OP, MINU_OP):
         stream.append((op, rng.randint(1, 31), neg_r, pos_r, 2, 0))
         stream.append((op, rng.randint(1, 31), pos_r, neg_r, 2, 0))
@@ -1305,17 +1544,18 @@ def build_decoder_zbb_logic_pack_minmax_stream(rng):
 
 
 def build_decoder_illegal_default_reset_stream(rng):
-    """Target ibex_decoder.sv: top-level `unique case (opcode) default:
-    illegal_insn=1'b1` (lines 643-645) and the reset-on-illegal gating block
-    (lines 658-666, rf_we/data_req_o/data_we_o/jump_in_dec_o/jump_set_o/
-    branch_in_dec_o/csr_access_o all forced 0 when illegal_insn).
+    """Target ibex_decoder.sv: top-level opcode case `default: illegal_insn
+    = 1'b1;` (line 643-645) and the reset-on-illegal gating block (lines
+    658-666) that forces rf_we/data_req_o/data_we_o/jump_in_dec_o/
+    jump_set_o/branch_in_dec_o/csr_access_o to 0 whenever illegal_insn=1.
 
-    ILLEGAL_INSN (op=83) is the codec's only way to reach this default arm.
-    Interleaves it with instructions that set each of the 7 gated signals
-    (ADD/JAL/SW/LW/BEQ/CSRRW) immediately before/after, so each signal's
-    gating mux toggles 0(legal)->1(illegal,forced 0)->0(legal), exercising
-    the reset block's per-signal AND-with-~illegal_insn structure rather than
-    just firing illegal_insn in isolation.
+    This stream interleaves op 83 (ILLEGAL_INSN, the codec's only way to
+    reach this default arm) with instructions that set each of the seven
+    gated signals immediately before/after, so the gating mux for each
+    signal toggles 0(legal)->1(illegal, forced 0)->0(legal) across
+    consecutive cycles.
+
+    MERGED from _draft_streams_decoder.py, unchanged.
     """
     ILLEGAL_INSN = 83
     ADD, JAL, BEQ = 0, 44, 38
@@ -1342,23 +1582,23 @@ def build_decoder_illegal_default_reset_stream(rng):
 
 
 # ---------------------------------------------------------------------------
-# ibex_compressed_decoder.sv — decoder-internal case arms (distinct from
-# ibex_branch_predict.sv's instr_cj/instr_cb, which read the decoded output;
-# these target the compressed_decoder's OWN instr_o construction muxes).
+# ibex_compressed_decoder.sv — RVC decode case-arms. Merged from
+# _draft_streams_compressed_decoder.py.
 # ---------------------------------------------------------------------------
 
 def build_compressed_c1_alu_shift_ca_mux_stream(rng):
-    """Target ibex_compressed_decoder.sv: C1 quadrant funct3=100 nested case
-    (lines 366-486), the deepest case-within-case in the file: c.srli(58,
-    instr_i[11:10]=00)/c.srai(59,=01)/c.andi(60,=10)/c.sub(57)/c.xor(56)/
-    c.or(55)/c.and(54) (=11, further CA-format case on {instr_i[12],
-    instr_i[6:5]}). c.subw/c.addw are RV64-only (unconditionally illegal
-    here); c.mul/c.zext.*/c.sext.*/c.not are Zcb-gated with no codec op index
-    — both skipped as structurally unreachable. Round-robins the 7 reachable
-    ops so instr_i[11:10] and {instr_i[12],instr_i[6:5]} both toggle fully.
+    """Target ibex_compressed_decoder.sv: C1 quadrant, funct3=100 nested case
+    (lines 366-486): c.srli(58)/c.srai(59)/c.andi(60) via instr_i[11:10],
+    and c.sub(57)/c.xor(56)/c.or(55)/c.and(54) via the CA-format
+    {instr_i[12],instr_i[6:5]} sub-case. (c.subw/c.addw are RV64-only,
+    illegal unconditionally; c.mul/c.zext.*/c.sext.*/c.not are Zcb-gated —
+    none of these six leaves has a codec op index, so they're structurally
+    unreachable here and are skipped rather than faked.)
+
+    MERGED from _draft_streams_compressed_decoder.py, unchanged.
     """
     stream = []
-    ops = [58, 59, 60, 57, 56, 55, 54]
+    ops = [58, 59, 60, 57, 56, 55, 54]  # C_SRLI, C_SRAI, C_ANDI, C_SUB, C_XOR, C_OR, C_AND
     for ib in range(5):
         for op in ops:
             rd = rng.randint(8, 15)
@@ -1369,16 +1609,20 @@ def build_compressed_c1_alu_shift_ca_mux_stream(rng):
 
 
 def build_compressed_c2_reg_ctrl_mux_stream(rng):
-    """Target ibex_compressed_decoder.sv: C2 quadrant funct3=100 register-
-    control if/else tree (lines 523-549), the widest decision tree outside
-    the (unreachable) Zcmp FSM: c.mv(49)->add, c.jr(80)->jalr x0, c.add(50)
-    ->add, c.ebreak(82)->fixed encoding, c.jalr(81)->jalr x1. Five distinct
-    instr_o constructions gated by instr_i[12] and instr_i[6:2]!=0, with a
-    third condition nested only inside the bit12=1/rs2==0 branch. The rd==0
-    illegal check on c.jr is unreachable (codec floors rs1>=1), skipped.
+    """Target ibex_compressed_decoder.sv: C2 quadrant, funct3=100 register-
+    control if/else tree (lines 523-549): c.mv(49)/c.jr(80)/c.add(50)/
+    c.ebreak(82)/c.jalr(81), gated by instr_i[12] and instr_i[6:2]!=0 (plus
+    a nested instr_i[11:7]==0 check inside the bit12=1/rs2==0 branch).
+    Round-robin forces every leaf every cycle.
+
+    The rd==0 illegal check on c.jr (line 532) is unreachable through the
+    codec: the C_JR encoder floors rs1 to >=1 unconditionally, so it is
+    skipped.
+
+    MERGED from _draft_streams_compressed_decoder.py, unchanged.
     """
     stream = []
-    ops = [49, 80, 50, 82, 81]
+    ops = [49, 80, 50, 82, 81]  # C_MV, C_JR, C_ADD, C_EBREAK, C_JALR
     for _ in range(10):
         for op in ops:
             stream.append((op, rng.randint(1, 31), rng.randint(1, 31),
@@ -1388,19 +1632,27 @@ def build_compressed_c2_reg_ctrl_mux_stream(rng):
 
 def build_compressed_lui_addi16sp_special_case_stream(rng):
     """Target ibex_compressed_decoder.sv: C1 quadrant funct3=011 rd-field
-    override mux (lines 352-364) — a single rd-field comparator re-routes the
-    SAME quadrant/funct3 encoding from a U-type LUI construction (default) to
-    a completely different I-type stack-pointer-ADDI construction when
-    instr_i[11:7]==5'h02. C_LUI(47) always encodes rd in {3..31} (codec's
-    safe_rd avoids {0,2}), only ever hitting the default path; C_ADDI16SP(77)
-    hardcodes rd=2, only ever hitting the override path. Alternating flips
-    the mux every pair. The illegal (nzimm==0) leaf is unreachable via either
-    op (both encoders guarantee nonzero), skipped.
+    override mux (lines 352-364) — a single rd-field comparator re-routes
+    the SAME quadrant/funct3 encoding from a U-type LUI construction
+    (default) to a completely different I-type stack-pointer-ADDI
+    construction when instr_i[11:7]==5'h02.
+
+    C_LUI(47) always encodes rd in {3..31} (avoids rd in {0,2}), so on its
+    own it only ever exercises the default LUI path. C_ADDI16SP(77)
+    hardcodes rd=5'h02 unconditionally, so it only ever exercises the
+    override path. Alternating the two ops forces this mux to flip on
+    every pair of actions.
+
+    The illegal (nzimm==0) leaf is unreachable via either op (both
+    encoders are constructed to never produce nzimm==0) — skipped rather
+    than faked.
+
+    MERGED from _draft_streams_compressed_decoder.py, unchanged.
     """
     stream = []
     for ib in range(5):
-        stream.append((47, rng.randint(3, 31), 0, 0, ib, 0))
-        stream.append((77, 2, 0, 0, ib, 0))
+        stream.append((47, rng.randint(3, 31), 0, 0, ib, 0))  # C_LUI -> default LUI path
+        stream.append((77, 2, 0, 0, ib, 0))                   # C_ADDI16SP -> override path
     return stream
 
 
@@ -1408,9 +1660,11 @@ def build_compressed_cl_cs_immediate_scramble_stream(rng):
     """Target ibex_compressed_decoder.sv: C0 quadrant c.lw(52)/c.sw(53)
     immediate bit-scramble (lines 235-246) — the 7-bit byte offset is NOT
     contiguous in the RVC encoding (imm[5:3] at instr_i[12:10], imm[2] at
-    instr_i[6], imm[6] at instr_i[5]), a genuine bit permutation. Sweeps all
-    5 CL_CS_UIMM_VALUES buckets and cycles rd'/rs1'/rs2' through all 8 prime
-    registers (x8-x15) to exercise every 3-bit register-select field.
+    instr_i[6], imm[6] at instr_i[5]), a genuine bit permutation. Cycling
+    rd'/rs1'/rs2' through all 8 prime registers (x8-x15) exercises the
+    3-bit register-select fields this case shares with the CA/CB group.
+
+    MERGED from _draft_streams_compressed_decoder.py, unchanged.
     """
     stream = []
     for ib in range(5):
@@ -1418,47 +1672,62 @@ def build_compressed_cl_cs_immediate_scramble_stream(rng):
             rd = 8 + base
             rs1 = 8 + ((base + 3) % 8)
             rs2 = 8 + ((base + 5) % 8)
-            stream.append((52, rd, rs1, 0, ib, 0))
-            stream.append((53, 0, rs1, rs2, ib, 0))
+            stream.append((52, rd, rs1, 0, ib, 0))    # C_LW
+            stream.append((53, 0, rs1, rs2, ib, 0))   # C_SW
     return stream
 
 
 def build_compressed_ci_addi_li_signext_stream(rng):
-    """Target ibex_compressed_decoder.sv: C1 quadrant c.addi(45)/c.li(46) CI-
-    format sign-bit fanout (lines 328-350) — both replicate the single CI
-    sign bit (instr_i[12]) across 7 output bits via {6{...}}. Includes rd=0
-    c.addi (architecturally c.nop, still legal — no illegal_instr_o in this
-    arm) alongside rd!=0 c.addi and c.li (always writes rd from x0, a
-    different upstream rd-write mux than c.addi's read-modify-write).
+    """Target ibex_compressed_decoder.sv: C1 quadrant funct3=000 (c.addi,
+    op=45) and funct3=010 (c.li, op=46) CI-format sign-bit fanout (lines
+    328-350) — both replicate the single CI sign bit (instr_i[12]) across 7
+    output bits via `{6{instr_i[12]}}`. rd=0 with imm=0 on c.addi is
+    architecturally c.nop — still legal (no illegal_instr_o anywhere in
+    this arm), so this stream deliberately includes that hint encoding
+    rather than avoiding it.
+
+    MERGED from _draft_streams_compressed_decoder.py, unchanged.
     """
     stream = []
     for ib in range(5):
-        stream.append((45, 0, 0, 0, ib, 0))
-        stream.append((45, rng.randint(1, 31), 0, 0, ib, 0))
-        stream.append((46, rng.randint(0, 31), 0, 0, ib, 0))
+        stream.append((45, 0, 0, 0, ib, 0))                     # C_ADDI, rd=0 (c.nop hint when ib=2 -> imm=0)
+        stream.append((45, rng.randint(1, 31), 0, 0, ib, 0))    # C_ADDI, rd!=0
+        stream.append((46, rng.randint(0, 31), 0, 0, ib, 0))    # C_LI
     return stream
 
 
 def build_compressed_ciw_addi4spn_scramble_stream(rng):
     """Target ibex_compressed_decoder.sv: C0 quadrant funct3=000
     c.addi4spn(51) (lines 226-233) — the file's most scrambled immediate
-    field, bit order [5|4|9|8|7|6|2|3] across instr_i[10:5]. Sweeps all 5
-    CIW_NZUIMM_VALUES buckets (4=low-end-only, 1020=high-end-only, etc.) and
-    cycles rd' through all 8 prime registers. The illegal (nzuimm==0) leaf is
-    unreachable via the codec (encoder asserts nonzero), skipped.
+    field, stored as bit order [5|4|9|8|7|6|2|3] across instr_i[10:5]. rd'
+    cycles through all 8 prime registers (instr_i[4:2]); base reg is
+    hardwired to x2/sp by the RTL itself so no rs1 sweep applies here.
+
+    The illegal (nzuimm==0) leaf is unreachable via the codec (its encoder
+    asserts nzuimm != 0 before encoding) — skipped rather than faked.
+
+    MERGED from _draft_streams_compressed_decoder.py, unchanged.
     """
     stream = []
     for ib in range(5):
         for rd in range(8, 16):
-            stream.append((51, rd, 0, 0, ib, 0))
+            stream.append((51, rd, 0, 0, ib, 0))  # C_ADDI4SPN
     return stream
 
 
 # ---------------------------------------------------------------------------
-# ibex_icache.sv — content-driven angles only (core cache mechanics — tag-RAM
-# hit/miss, way selection, fill-buffer arbitration, ECC/scrambling — are
-# driven by fetch-ADDRESS patterns this codec cannot engineer, confirmed
-# unreachable and not targeted here).
+# ibex_icache.sv — content/CSR-driven config + skid-buffer + fill-density
+# mechanics (the address-driven core cache mechanics -- way selection,
+# tag-RAM hit/miss, ECC checking -- are unreachable from this codec, which
+# has no label/jump-target resolution: imm_bucket only selects one of 5
+# fixed offsets relative to the current PC). Merged from
+# _draft_streams_icache.py.
+#
+# icache_enable_i bit position (cpuctrl bit0) confirmed directly against
+# ibex_cs_registers.sv's cpu_ctrl_sts_part_t (see the ibex_dummy_instr
+# section above for the full struct) -- bit0 IS icache_enable, so this
+# draft's claim (unlike pass-1's dummy_instr claim of the same bit) is
+# correct as written; no fix needed for the bit position.
 # ---------------------------------------------------------------------------
 
 CPUCTRL_BUCKET = 68  # L11_CSRS index of 0x7C0 (cpuctrl); bit0 = icache_enable
@@ -1468,48 +1737,49 @@ CSRRCI = 68
 
 
 def build_ibex_icache_enable_toggle_stream(rng):
-    """Target ibex_icache.sv: icache_enable_i central mux points (gates
-    lookup_actual_ic0, fill_cache_new, fill_spec_req, instr_req, fill_cache_d).
+    """Target ibex_icache.sv: icache_enable_i central mux points
+    (lookup_actual_ic0, fill_cache_new, fill_spec_req, instr_req,
+    fill_cache_d gating). CSRRSI x0,cpuctrl,uimm=1 sets bit0=1 (enable);
+    CSRRCI x0,cpuctrl,uimm=1 clears bit0 (disable) — both literal-uimm ops,
+    so the write value doesn't depend on any register content. Interleaves
+    short instruction bursts so the enable/disable toggle lands both
+    between fetches and, on short bursts, plausibly mid-fill.
 
-    icache_enable_i is sourced from cpuctrl CSR bit[0] (verified against the
-    cpu_ctrl_sts_part_t packed struct in ibex_cs_registers.sv). CSRRSI/CSRRCI
-    x0,cpuctrl,uimm=1 sets/clears it deterministically (literal uimm, no
-    register-value dependency). Interleaves short load bursts (real icache
-    fetches likely to start a fill) with enable/disable toggles so the toggle
-    lands both between fetches and plausibly mid-fill.
+    MERGED from _draft_streams_icache.py, unchanged.
     """
     stream = []
     for round_i in range(8):
         stream.append((CSRRSI, 0, 1, 0, 2, CPUCTRL_BUCKET))
         for _ in range(3):
-            op = rng.choice([19, 20, 21, 22, 23])
+            op = rng.choice([19, 20, 21, 22, 23])  # LB/LH/LW/LBU/LHU
             stream.append((op, rng.randint(1, 31), rng.randint(1, 31), 0,
                            rng.randint(0, 4), 0))
         stream.append((CSRRCI, 0, 1, 0, 2, CPUCTRL_BUCKET))
         for _ in range(2):
-            op = rng.choice([0, 1, 8, 9])
+            op = rng.choice([0, 1, 8, 9])  # ADD/SUB/OR/AND — plain fetches while disabled
             stream.append((op, rng.randint(1, 31), rng.randint(1, 31),
                            rng.randint(1, 31), 2, 0))
-    stream.append((CSRRSI, 0, 1, 0, 2, CPUCTRL_BUCKET))
+    stream.append((CSRRSI, 0, 1, 0, 2, CPUCTRL_BUCKET))  # end enabled
     return stream
 
 
 def build_ibex_icache_fencei_reinvalidate_burst_stream(rng):
     """Target ibex_icache.sv: inval_state_e FSM, INVAL_CACHE restart arm —
-    if icache_inval_i re-asserts while inval_state_q is still INVAL_CACHE
-    from a previous invalidation, it restarts with a new scramble key instead
-    of completing. FENCE.I (op=72) asserts icache_inval_o for one cycle on
-    retire. Firing FENCE.I back-to-back (cheap ALU ops between, no loads, to
-    keep retire rate high) keeps the gap between pulses short relative to the
-    INVAL_CACHE walk, making the restart arm likely. A final isolated
-    FENCE.I + long ALU tail lets one invalidation reach the completion->IDLE
-    arm instead.
+    a later FENCE.I landing while inval_state_q is still INVAL_CACHE from a
+    previous one restarts the walk with a new scramble key instead of
+    completing it. FENCE.I (op=72) fires icache_inval_o for one cycle on
+    its first retire cycle. Firing FENCE.I back-to-back (short ALU gaps, no
+    loads) keeps successive icache_inval_i pulses close together, making
+    the restart arm likely; a final isolated FENCE.I with a long ALU tail
+    lets one invalidation run to completion (IDLE arm) instead.
+
+    MERGED from _draft_streams_icache.py, unchanged.
     """
     stream = []
     for _ in range(10):
         stream.append((FENCE_I, 0, 0, 0, 0, 0))
         for _ in range(2):
-            op = rng.choice([0, 1, 5, 8, 9])
+            op = rng.choice([0, 1, 5, 8, 9])  # single-cycle ALU, no memory stalls
             stream.append((op, rng.randint(1, 31), rng.randint(1, 31),
                            rng.randint(1, 31), 2, 0))
     stream.append((FENCE_I, 0, 0, 0, 0, 0))
@@ -1521,16 +1791,22 @@ def build_ibex_icache_fencei_reinvalidate_burst_stream(rng):
 
 
 def build_ibex_icache_enable_during_invalidate_stream(rng):
-    """Target ibex_icache.sv: icache_enable_i x icache_inval_i cross terms —
-    inval_block_cache forces lookup_actual_ic0/fill_cache_new to 0 whenever
-    an invalidation is in flight, regardless of icache_enable_i. Interleaves
-    cpuctrl bit[0] toggles with FENCE.I so all 4 combinations (enable/disable
-    x inval-in-flight/not) occur — both signals are CSR/opcode-content-driven,
-    so this combination is fully reachable without fetch-address control.
+    """Target ibex_icache.sv: icache_enable_i x icache_inval_i cross terms
+    (fill_cache_d gating, inval_block_cache forcing lookup_actual_ic0/
+    fill_cache_new to 0 while an invalidation is in flight). Interleaves
+    cpuctrl bit0 toggles with FENCE.I so the two independently-sourced
+    config signals overlap in every combination: enable+no-inval,
+    enable+inval-in-flight, disable+inval-in-flight, disable+no-inval.
+
+    MERGED from _draft_streams_icache.py, unchanged.
     """
     stream = []
     pattern = [
-        (CSRRSI, 1), (FENCE_I, None), (CSRRCI, 1), (FENCE_I, None), (CSRRSI, 1),
+        (CSRRSI, 1),   # enable
+        (FENCE_I, None),  # start invalidation while enabled
+        (CSRRCI, 1),   # disable while invalidation is (likely) still in flight
+        (FENCE_I, None),  # re-request invalidation while disabled
+        (CSRRSI, 1),   # re-enable while invalidation is (likely) still in flight
     ]
     for _ in range(6):
         for op, uimm in pattern:
@@ -1541,23 +1817,27 @@ def build_ibex_icache_enable_during_invalidate_stream(rng):
             alu_op = rng.choice([0, 1, 8, 9])
             stream.append((alu_op, rng.randint(1, 31), rng.randint(1, 31),
                            rng.randint(1, 31), 2, 0))
-    stream.append((CSRRSI, 0, 1, 0, 2, CPUCTRL_BUCKET))
+    stream.append((CSRRSI, 0, 1, 0, 2, CPUCTRL_BUCKET))  # leave enabled
     return stream
 
 
 def build_ibex_icache_compressed_alignment_skid_stream(rng):
-    """Target ibex_icache.sv: skid-buffer / output-address-parity FSM
-    (output_addr_q[1], addr_incr_two, skid_valid_d/skid_ready). Halfword
-    parity is advanced purely by whether each retired instruction was 2B
-    (compressed) or 4B — content-driven, independent of fetch address. An
-    ODD run of compressed ops flips parity to 1, forcing the next
-    uncompressed op to fetch unaligned and engage the skid buffer. Emits runs
-    of 1/3/5 compressed ops (always odd) followed by uncompressed ops,
-    cycling engage/steady-state/disengage transitions.
+    """Target ibex_icache.sv: skid-buffer / output-address-parity FSM.
+    output_addr_q[1] (halfword parity) is advanced purely by whether each
+    successive retired instruction was 2B (compressed) or 4B — a property
+    entirely of which ops the codec chose to emit, independent of any fetch
+    address. An ODD run of compressed ops flips parity to 1, so the next
+    uncompressed (4B) op is fetched unaligned and must be split across two
+    16-bit output beats via the skid buffer. This stream forces that by
+    emitting runs of 1, 3, 5 compressed ops (always odd) followed by two
+    uncompressed ops, cycling the skid buffer engage/steady-state/disengage
+    transitions on every group.
+
+    MERGED from _draft_streams_icache.py, unchanged.
     """
     stream = []
-    compressed_ops = [45, 46, 48, 54, 55, 56, 57, 60]
-    uncompressed_ops = [0, 1, 5, 8, 9, 10, 13, 14, 15]
+    compressed_ops = [45, 46, 48, 54, 55, 56, 57, 60]  # C_ADDI/C_LI/C_SLLI/C_AND/C_OR/C_XOR/C_SUB/C_ANDI
+    uncompressed_ops = [0, 1, 5, 8, 9, 10, 13, 14, 15]  # ADD/SUB/XOR/OR/AND/ADDI/XORI/ORI/ANDI
     for odd_run in [1, 3, 5, 1, 3]:
         for _ in range(odd_run):
             op = rng.choice(compressed_ops)
@@ -1573,18 +1853,21 @@ def build_ibex_icache_compressed_alignment_skid_stream(rng):
 
 def build_ibex_icache_branch_density_stale_fill_stream(rng):
     """Target ibex_icache.sv: fill_stale_d + branch-clears-skid-buffer paths.
-    The codec cannot choose a branch's target (no label resolution) but fully
-    controls branch/jump DENSITY relative to memory ops that start fills.
-    Maximises that density: loads to start multi-beat fills immediately
-    followed by a branch/jump, repeated, so branch_i is statistically likely
-    to assert while the preceding load's fill buffer is still busy (hitting
-    fill_stale_d) and to unconditionally clear any live skid buffer state.
+    The codec cannot choose a branch's TARGET (imm_bucket is one of 5 fixed
+    small offsets, no label resolution), but it fully controls branch/jump
+    DENSITY relative to memory ops that start fills. This stream maximises
+    that density: loads to start fills (multi-beat, so fill_busy_q stays
+    set for several cycles) immediately followed by a branch/jump,
+    repeated, so branch_i is statistically likely to assert while the
+    preceding load's fill buffer is still busy.
+
+    MERGED from _draft_streams_icache.py, unchanged.
     """
     stream = []
-    load_ops = [19, 20, 21, 22, 23]
-    branch_ops = [38, 39, 40, 41, 42, 43]
-    jump_ops = [44, 65]
-    compressed_branch_jump = [73, 74, 75, 76, 80, 81]
+    load_ops = [19, 20, 21, 22, 23]  # LB/LH/LW/LBU/LHU
+    branch_ops = [38, 39, 40, 41, 42, 43]  # BEQ/BNE/BLT/BGE/BLTU/BGEU
+    jump_ops = [44, 65]  # JAL/JALR
+    compressed_branch_jump = [73, 74, 75, 76, 80, 81]  # C_JAL/C_J/C_BEQZ/C_BNEZ/C_JR/C_JALR
     for _ in range(16):
         op = rng.choice(load_ops)
         stream.append((op, rng.randint(1, 31), rng.randint(1, 31), 0,
@@ -1623,7 +1906,7 @@ ALL_STREAM_BUILDERS = [
     build_csr_full_sweep_stream,
     build_exception_save_restore_stream,
     build_mstatus_bits_stream,
-    # ibex_csr (2 — build_csr_shadow_stream deleted post-review, dead RTL)
+    # ibex_csr (2 -- build_csr_shadow_stream deleted, RTL unreachable, see header)
     build_ibex_csr_wr_en_stream,
     build_ibex_csr_reset_path_stream,
     # ibex_counter (5)
@@ -1658,13 +1941,14 @@ ALL_STREAM_BUILDERS = [
     build_ibex_branch_predict_compressed_jump_stream,
     build_ibex_branch_predict_compressed_branch_stream,
     build_ibex_branch_predict_all_case_arms_stream,
-    # ibex_core (5)
+    # ibex_core, scope core_a (4) -- merged from _draft_streams_core_a.py
     build_core_csr_wdata_bus_toggle_stream,
     build_core_perf_event_interleave_stream,
     build_core_pmp_req_type_toggle_stream,
     build_core_raw_hazard_stall_stream,
+    # ibex_core, scope core_b (1) -- merged from _draft_streams_core_b.py
     build_core_illegal_insn_toggle_stream,
-    # ibex_decoder (8)
+    # ibex_decoder (8) -- merged from _draft_streams_decoder.py
     build_decoder_op_imm_bitcount_stream,
     build_decoder_crc32_stream,
     build_decoder_op_imm_shamt_family_stream,
@@ -1673,14 +1957,14 @@ ALL_STREAM_BUILDERS = [
     build_decoder_zbe_zbf_stream,
     build_decoder_zbb_logic_pack_minmax_stream,
     build_decoder_illegal_default_reset_stream,
-    # ibex_compressed_decoder (6)
+    # ibex_compressed_decoder (6) -- merged from _draft_streams_compressed_decoder.py
     build_compressed_c1_alu_shift_ca_mux_stream,
     build_compressed_c2_reg_ctrl_mux_stream,
     build_compressed_lui_addi16sp_special_case_stream,
     build_compressed_cl_cs_immediate_scramble_stream,
     build_compressed_ci_addi_li_signext_stream,
     build_compressed_ciw_addi4spn_scramble_stream,
-    # ibex_icache (5)
+    # ibex_icache (5) -- merged from _draft_streams_icache.py
     build_ibex_icache_enable_toggle_stream,
     build_ibex_icache_fencei_reinvalidate_burst_stream,
     build_ibex_icache_enable_during_invalidate_stream,
