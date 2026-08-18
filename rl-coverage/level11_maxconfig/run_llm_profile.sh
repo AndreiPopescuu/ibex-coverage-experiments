@@ -18,7 +18,7 @@
 #   ./run_llm_profile.sh 24
 set -u
 PROFILE=llm_rtl_directed_test
-TARGET_INSTRUCTIONS=139406
+TARGET_INSTRUCTIONS="${TARGET_INSTRUCTIONS:-139406}"
 N_PARALLEL="${1:-8}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
