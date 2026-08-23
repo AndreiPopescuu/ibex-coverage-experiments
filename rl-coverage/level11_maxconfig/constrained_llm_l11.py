@@ -18,6 +18,21 @@ HISTORY
   Fix+merge pass (this file): every review finding independently re-verified
     against the actual RTL (not taken on the review's word), fixed in place;
     the 24 draft functions merged in after their own independent spot-check.
+  Pass 3 (2 parallel isolated synthesis agents, targeting the specific bins
+    still uncovered after passes 1-2's 63 streams plateaued at ~80% toggle
+    regardless of instruction budget): ibex_core exception/trap-capture CSRs
+    (mepc/mtvec/mtval/nt_branch_addr) + ibex_decoder bt_a_mux_sel_o. Each
+    agent given ONLY the target RTL file + the exact uncovered-signal list +
+    this project's own action-space description -- no conversation context,
+    same "zero riscv-dv knowledge" constraint as passes 1-2. Independent
+    isolated review pass verified every RTL/codec-index claim in both
+    drafts (csr_bucket placeholders resolved to real L11_CSRS indices,
+    caught an RVC prime-register bug in the nt_branch_addr stream (C_BEQZ's
+    3-bit field can't address x0), confirmed all 11 "unreachable" findings).
+    9 of 11 originally-targeted ibex_decoder gaps and 2 of 7 ibex_core gaps
+    (csr_depc, debug_cause) confirmed structurally unreachable on this
+    codec/build -- see the per-function docstrings below for exact RTL
+    citations; no streams were fabricated for those.
 
 FIX METHODOLOGY APPLIED (see individual docstrings for per-function detail):
   - "CSRRW/CSRRS/CSRRC with an unconstrained register never guarantees the
@@ -1387,6 +1402,143 @@ def build_core_illegal_insn_toggle_stream(rng):
 
 
 # ---------------------------------------------------------------------------
+# ibex_core.sv (scope "core_c") — exception/trap-capture CSR toggle diversity
+# + nt_branch_addr PC-walk. Pass 3 (isolated synthesis -> isolated review ->
+# fix+merge, same pipeline as passes 1-2). csr_depc/debug_cause confirmed
+# structurally unreachable on this build (debug_req_i tied to 0 in the tb,
+# DCSR/DPC/trigger-register writes all gated behind debug_mode_i already
+# being set -- a closed loop with no entry point) -- no stream synthesized
+# for those two, reported as a finding instead.
+# ---------------------------------------------------------------------------
+
+def _emit_diverse_value(stream, rng, dst):
+    """Load two distinct registers via ADDI, SLL one by the other, XOR against
+    a third ADDI-loaded register, to scramble the 5 fixed imm_bucket literals
+    ({-2048,-100,0,100,2047}) into a much richer 32-bit pattern in `dst` than
+    any single literal alone -- used by the CSR-toggle streams below, whose
+    target registers pass csr_wdata_int through mostly/fully unmasked, so
+    value diversity (not reachability) was the limiting factor.
+    """
+    a = rng.randint(1, 31)
+    b = rng.randint(1, 31)
+    c = rng.randint(1, 31)
+    while b == a:
+        b = rng.randint(1, 31)
+    stream.append((10, a, 0, 0, rng.randint(0, 4), 0))
+    stream.append((10, b, 0, 0, rng.randint(0, 4), 0))
+    stream.append((2,  a, a, b, 0, 0))   # SLL a, a, b
+    stream.append((10, c, 0, 0, rng.randint(0, 4), 0))
+    stream.append((5,  dst, a, c, 0, 0))  # XOR dst, a, c
+
+
+def build_core_csr_mepc_toggle_stream(rng):
+    """Target ibex_cs_registers.sv:227 (mepc_q, mepc_d), :609-610 (default
+    mepc_d = {csr_wdata_int[31:1], 1'b0}), :669 (CSR_MEPC: mepc_en=1'b1),
+    :920-932 (mepc_q register instance), :881 (csr_mepc_o = mepc_q). Also
+    covers ibex_core.sv:966 crash_dump_o.exception_pc (a pure alias of mepc).
+
+    CSR_MEPC (0x341) is not in ibex_cs_registers.sv's dbg_csr set, so
+    illegal_csr_dbg never blocks this write from ordinary M-mode code.
+    csr_bucket=1 -> L11_CSRS[1] == 0x341 (mepc), verified against the CSR
+    pool's build order (L7_SAFE_CSRS[1] = mepc; L11_CSRS = ... + L7_SAFE_CSRS
+    + ... unmodified through L9/L10/L11).
+
+    Caveat: mepc_d forces bit0 to 0 on every write, so mepc's bit0 toggle
+    coverage is structurally capped regardless of stimulus; bits[31:1] get
+    full diversity from _emit_diverse_value.
+    """
+    CSR_MEPC_BUCKET = 1
+    stream = []
+    for _ in range(24):
+        dst = rng.randint(1, 31)
+        _emit_diverse_value(stream, rng, dst)
+        stream.append((27, 0, dst, 0, 0, CSR_MEPC_BUCKET))  # CSRRW x0, mepc, dst
+    return stream
+
+
+def build_core_csr_mtvec_toggle_stream(rng):
+    """Target ibex_cs_registers.sv:233 (mtvec_q, mtvec_d), :617-621 (only
+    bits[31:8] are software-controlled -- bits[7:2] hardzero, bits[1:0]
+    fixed to 2'b01 -- on both the reset-init and explicit-write paths),
+    :678 (CSR_MTVEC: mtvec_en=1'b1), :994-1006 (mtvec_q instance), :883
+    (csr_mtvec_o=mtvec_q). Not in dbg_csr.
+
+    csr_bucket=31 -> L11_CSRS[31] == 0x305 (mtvec): L9_CSRS appends
+    [mstatus, mie, mtvec] after L7_SAFE_CSRS's 29 entries (indices 0-28),
+    landing mstatus=29, mie=30, mtvec=31; L10/L11 only append further CSRs
+    after this point, so the index is stable.
+
+    Caveat: bits[7:0] are pinned to 0x01 by RTL on every write (same as
+    reset), so only bits[31:8] (24 bits) carry real coverage value here.
+    """
+    CSR_MTVEC_BUCKET = 31
+    stream = []
+    for _ in range(24):
+        dst = rng.randint(1, 31)
+        _emit_diverse_value(stream, rng, dst)
+        stream.append((27, 0, dst, 0, 0, CSR_MTVEC_BUCKET))  # CSRRW x0, mtvec, dst
+    return stream
+
+
+def build_core_crash_dump_exception_addr_toggle_stream(rng):
+    """Target ibex_cs_registers.sv:231 (mtval_q, mtval_d), :615-616 (default
+    mtval_en=1'b0; mtval_d=csr_wdata_int, fully UNMASKED -- unlike mepc/
+    mtvec above), :675 (CSR_MTVAL: mtval_en=1'b1), :980-992 (mtval_q
+    instance), :884 (csr_mtval_o=mtval_q). ibex_core.sv:967
+    crash_dump_o.exception_addr = crash_dump_mtval, wired at ibex_core.sv:
+    1110 (.csr_mtval_o(crash_dump_mtval)) -- confirmed a genuine mtval alias.
+
+    csr_bucket=3 -> L11_CSRS[3] == 0x343 (mtval): L7_SAFE_CSRS[0..3] =
+    mscratch, mepc, mcause, mtval.
+    """
+    CSR_MTVAL_BUCKET = 3
+    stream = []
+    for _ in range(16):
+        dst = rng.randint(1, 31)
+        _emit_diverse_value(stream, rng, dst)
+        stream.append((27, 0, dst, 0, 0, CSR_MTVAL_BUCKET))  # CSRRW x0, mtval, dst
+    return stream
+
+
+def build_core_nt_branch_addr_toggle_stream(rng):
+    """Target ibex_core.sv:222 (nt_branch_addr), driven at ibex_id_stage.sv:
+    757-758: nt_branch_addr_o = pc_id_i + (instr_is_compressed_i ? 2 : 4),
+    UNCONDITIONALLY for every instruction (not gated on branch/jump opcode),
+    when BranchPredictor=1 -- confirmed forced to 1 in this project's build
+    (cpu/cocotb_ibex_max_upstream.sv:52), else tied to 0.
+
+    Since nt_branch_addr is combinationally pc_id_i + a small constant, its
+    bit pattern is a function of the live PC. This stream chains many
+    always-taken control-flow ops with randomized imm_bucket offsets so the
+    PC executes a long biased random walk, spreading pc_id_i's (and hence
+    nt_branch_addr's) bit pattern across many positions: JAL (op=44,
+    uncompressed, +4 addend case), C_J (op=74, compressed, +2 addend case),
+    BEQ (op=38) with rs1==rs2 (always taken, any register value), and
+    C_BEQZ (op=75) against x8.
+
+    C_BEQZ note: RVC's 3-bit prime-register field (rs1p = rs1 & 7) can only
+    address x8-x15, NOT x0 -- passing rs1=0 selects x8, not x0. x8 is
+    zeroed once at stream start via ADDI so the C_BEQZ branch is a real,
+    guaranteed-taken branch rather than testing an arbitrary register.
+    """
+    JAL, C_J, BEQ, C_BEQZ, ADDI = 44, 74, 38, 75, 10
+    stream = [(ADDI, 8, 0, 0, 2, 0)]  # x8 = 0, so C_BEQZ (x8) below is real
+    for _ in range(40):
+        choice = rng.randint(0, 3)
+        bucket = rng.randint(0, 4)
+        if choice == 0:
+            stream.append((JAL, rng.randint(1, 31), 0, 0, bucket, 0))
+        elif choice == 1:
+            stream.append((C_J, 0, 0, 0, bucket, 0))
+        elif choice == 2:
+            r = rng.randint(1, 31)
+            stream.append((BEQ, 0, r, r, bucket, 0))
+        else:
+            stream.append((C_BEQZ, 0, 0, 0, bucket, 0))  # tests x8 (==0)
+    return stream
+
+
+# ---------------------------------------------------------------------------
 # ibex_decoder.sv — RV32B decode case-arms not exercised by build_alu_rv32b_stream
 # (which only covers ROL/ROR/RORI/BSET/BCLR/BINV/BEXT/SH1ADD/SH2ADD/SH3ADD).
 # Merged from _draft_streams_decoder.py.
@@ -1578,6 +1730,52 @@ def build_decoder_illegal_default_reset_stream(rng):
         stream.append((ILLEGAL_INSN, 0, 0, 0, 0, 0))
         stream.append((ADD, rng.randint(1, 31), rng.randint(1, 31),
                        rng.randint(1, 31), 2, 0))
+    return stream
+
+
+# ---------------------------------------------------------------------------
+# ibex_decoder.sv — bt_a_mux_sel_o diversity. Pass 3 (isolated synthesis ->
+# isolated review -> fix+merge). 9 of the 11 originally-targeted decoder
+# gaps confirmed structurally unreachable on this codec/build (hardwired-
+# zero RTL bits in imm_u_type_o/imm_b_type_o/imm_j_type_o, RV32E forced 0,
+# csr_illegal's funct3 pattern never emitted, use_rs3 needing an rs3 field
+# the 6-tuple action space doesn't have -- codec_l11.py's own docstring
+# already flags this, dret_insn_o needing an opcode never in the 143-op
+# table, illegal_c_insn_i's trigger conditions actively engineered out of
+# codec_rvc.py) -- reported as findings, no stream synthesized for those.
+# ---------------------------------------------------------------------------
+
+def build_decoder_bt_a_mux_sel_reg_a_diversity_stream(rng):
+    """Target ibex_decoder.sv bt_a_mux_sel_o (op_a_sel_e 2-bit enum,
+    ibex_pkg.sv:246-251: OP_A_REG_A=00, OP_A_FWD=01, OP_A_CURRPC=10,
+    OP_A_IMM=11). Traced every assignment in the ALU-control always_comb
+    block (ibex_decoder.sv:673-1189): default = OP_A_CURRPC (line 681,
+    LOAD/STORE/OP_IMM/OP/LUI/AUIPC/SYSTEM never touch it); explicit
+    reassignment only in OPCODE_JAL (line 700, CURRPC), OPCODE_JALR (line
+    722, REG_A), OPCODE_BRANCH (line 755, CURRPC), and FENCE.I (line 1153,
+    CURRPC) -- all gated by BranchTargetALU, confirmed 1 in
+    cpu/cocotb_ibex_max_upstream.sv:47.
+
+    OP_A_FWD/OP_A_IMM never appear anywhere -> bit[0] of bt_a_mux_sel_o is
+    permanently 0, unreachable with any stimulus. This stream targets
+    bit[1] (CURRPC vs REG_A) by densely alternating JALR (the only op that
+    ever sets REG_A) against JAL/BEQ/FENCE.I (all CURRPC), in case JALR was
+    under-exercised relative to its siblings by the rest of the CRT.
+    """
+    JAL, JALR, BEQ, FENCE_I = 44, 65, 38, 72
+    stream = []
+    for _ in range(10):
+        stream.append((JALR, rng.randint(0, 31), rng.randint(1, 31), 0,
+                        rng.randint(0, 4), 0))
+        choice = rng.choice([JAL, BEQ, FENCE_I])
+        if choice == BEQ:
+            stream.append((BEQ, 0, rng.randint(0, 31), rng.randint(0, 31),
+                            rng.randint(0, 4), 0))
+        elif choice == JAL:
+            stream.append((JAL, rng.randint(0, 31), 0, 0,
+                            rng.randint(0, 4), 0))
+        else:
+            stream.append((FENCE_I, 0, 0, 0, 0, 0))
     return stream
 
 
@@ -1948,6 +2146,12 @@ ALL_STREAM_BUILDERS = [
     build_core_raw_hazard_stall_stream,
     # ibex_core, scope core_b (1) -- merged from _draft_streams_core_b.py
     build_core_illegal_insn_toggle_stream,
+    # ibex_core, scope core_c (4) -- Pass 3, exception/trap-capture CSRs +
+    # nt_branch_addr PC-walk
+    build_core_csr_mepc_toggle_stream,
+    build_core_csr_mtvec_toggle_stream,
+    build_core_crash_dump_exception_addr_toggle_stream,
+    build_core_nt_branch_addr_toggle_stream,
     # ibex_decoder (8) -- merged from _draft_streams_decoder.py
     build_decoder_op_imm_bitcount_stream,
     build_decoder_crc32_stream,
@@ -1957,6 +2161,8 @@ ALL_STREAM_BUILDERS = [
     build_decoder_zbe_zbf_stream,
     build_decoder_zbb_logic_pack_minmax_stream,
     build_decoder_illegal_default_reset_stream,
+    # ibex_decoder (1) -- Pass 3, bt_a_mux_sel_o diversity
+    build_decoder_bt_a_mux_sel_reg_a_diversity_stream,
     # ibex_compressed_decoder (6) -- merged from _draft_streams_compressed_decoder.py
     build_compressed_c1_alu_shift_ca_mux_stream,
     build_compressed_c2_reg_ctrl_mux_stream,
@@ -1972,4 +2178,4 @@ ALL_STREAM_BUILDERS = [
     build_ibex_icache_branch_density_stale_fill_stream,
 ]
 
-assert len(ALL_STREAM_BUILDERS) == 63, len(ALL_STREAM_BUILDERS)
+assert len(ALL_STREAM_BUILDERS) == 68, len(ALL_STREAM_BUILDERS)
