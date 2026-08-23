@@ -26,6 +26,15 @@ REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "${IBEX_VENV:-$HOME/ibex_env}/bin/activate"
 cd "$SCRIPT_DIR"
 
+echo "=== Cleaning up stale seed files from any earlier run of this profile ==="
+# Without this, leftover corpus_suite_${PROFILE}_seed*.json / matching .dat
+# files from a PRIOR run at a different budget/stream-set (e.g. run_1p4M.sh's
+# 10x-budget run, which leaves seeds up into the hundreds) silently get
+# swept up by this script's own globs below, mixing old and new stream
+# content into one contaminated "union". Delete both before regenerating.
+rm -f "$SCRIPT_DIR"/corpus_suite_${PROFILE}_seed*.json
+rm -f "$REPO/cpu"/coverage_suite_${PROFILE}_seed*.dat
+
 echo "=== Generating corpus for $PROFILE (target ~$TARGET_INSTRUCTIONS instructions) ==="
 python3 gen_one_profile_corpus.py "$PROFILE" --target-instructions "$TARGET_INSTRUCTIONS"
 
