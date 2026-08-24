@@ -23,17 +23,24 @@ generator hand-ported from lowRISC's actual riscv-dv logic) or the full
 Every stream in `constrained_llm_l11.py` went through the same three-stage
 pipeline, repeated in passes as new RTL modules got targeted:
 
-1. **Isolated synthesis** — a fresh agent, no conversation context, given
-   only one RTL module's source + the specific Verilator toggle bins still
-   uncovered + this project's action-space description (`codec_l11.py`'s
-   6-tuple interface). Proposes `build_<name>_stream(rng)` functions, each
-   docstring citing the exact RTL file:line it targets.
-2. **Isolated review** — a second fresh agent, given the draft(s) + the same
-   RTL, independently re-derives and checks every claim (RTL citations,
-   op/csr-bucket indices, whether the codec's actual constraints — no
-   label/jump-target resolution, only 5 fixed immediate buckets, no memory
-   model — make the proposed stream actually work).
+1. **Isolated synthesis** — one fresh agent PER TARGETED MODULE (in parallel
+   if targeting several), no conversation context, given only that RTL
+   module's source + the specific Verilator toggle bins still uncovered +
+   this project's action-space description (`codec_l11.py`'s 6-tuple
+   interface). Proposes `build_<name>_stream(rng)` functions, each docstring
+   citing the exact RTL file:line it targets.
+2. **Isolated review** — one fresh agent, given ALL the draft(s) from step 1
+   at once (not one review agent per draft) + the same RTL, independently
+   re-derives and checks every claim (RTL citations, op/csr-bucket indices,
+   whether the codec's actual constraints — no label/jump-target resolution,
+   only 5 fixed immediate buckets, no memory model — make the proposed
+   stream actually work).
 3. **Merge** — confirmed/fixed functions get appended to `ALL_STREAM_BUILDERS`.
+
+Both agent prompts are FIXED templates, not retyped by hand each round — see
+`crt_synthesis_prompts.py` below. Passes 1-2's exact prompt wording was
+never saved and is now unrecoverable; from Pass 3 onward every round should
+build its prompt through that file so this can't happen again.
 
 The full pass-by-pass log (which modules, how many streams, what the review
 caught) lives in `constrained_llm_l11.py`'s own module docstring — that's
@@ -46,8 +53,9 @@ the authoritative history, not this file.
 |---|---|
 | `codec_l11.py` | The action space: encodes a `(op, rd, rs1, rs2, imm_bucket, csr_bucket)` 6-tuple into a real RV32IMC+RV32B instruction word. 143 ops, 5 imm buckets, ~70-entry CSR pool. Everything the CRT can possibly do is bounded by what this file can encode. |
 | `constrained_llm_l11.py` | The CRT: `ALL_STREAM_BUILDERS`, currently 68 functions across 13 RTL modules. Each function's docstring is its own RTL citation/justification. |
-| `testlist_l11.py` | Wires `ALL_STREAM_BUILDERS` into the `llm_rtl_directed_test` profile (`_build_llm_rtl_directed`) alongside every other profile (lowRISC-style baseline profiles, CSR sweeps, etc.) that this project's suite runner understands. |
-| `llm_constraint_synth.py` | A *different*, unused-for-the-current-streams synthesis path: one big single-shot Anthropic API call instead of the isolated-agent-per-module pipeline above. Kept for reference/comparison; not what produced the committed 68 streams. |
+| `testlist_l11.py` | Wires `ALL_STREAM_BUILDERS` into the `llm_rtl_directed_test` profile (`_build_llm_rtl_directed`) alongside every other profile (lowRISC-style baseline profiles, CSR sweeps, etc.) that this project's suite runner understands. **Note**: `_build_llm_rtl_directed()` (line 284) shuffles the *entire* flattened instruction list at the end, not just stream order — see open threads below, this is a live bug suspect. |
+| `crt_synthesis_prompts.py` | **The actual prompt source for the real pipeline.** Fixed, non-varying `SYNTHESIS_PROMPT_TEMPLATE` and `REVIEW_PROMPT_TEMPLATE` strings, filled in via a small CLI (`synthesis --rtl-path ... --signals ...` / `review --rtl-path ... --draft-file ...`). Reuses `llm_constraint_synth.py`'s `gather_action_space_summary()` for the action-space section so it can't drift from the real codec. |
+| `llm_constraint_synth.py` | A *different*, unused-for-the-current-streams synthesis path: one big single-shot Anthropic API call instead of the isolated-agent-per-module pipeline above. Kept for reference/comparison (and as a dependency of `crt_synthesis_prompts.py`'s action-space text); not what produced the committed 68 streams. |
 
 ### Corpus generation & running
 | File | Role |
@@ -93,13 +101,21 @@ specifically. `test_rv32b.py` — one-off sanity check for the 29 RV32B ops.
 this project; not about the LLM CRT specifically.
 
 ### Archive
-`archive/llm_crt_10x_run_corpora/` — the 737 `corpus_suite_llm_rtl_directed_
-test_seed*.json` files from the 10x-budget run (`run_1p4M.sh`), moved out of
-the live directory so they don't shadow/contaminate a fresh matched-budget
-run's corpus glob (see "open threads" below — this exact contamination
-already happened once this session). Regenerate on demand with
-`run_1p4M.sh` rather than relying on this snapshot; it's kept for reference,
-not as something to run against directly.
+- `archive/llm_crt_10x_run_corpora/` — the 737 `corpus_suite_llm_rtl_directed_
+  test_seed*.json` files from the 10x-budget run (`run_1p4M.sh`), moved out
+  of the live directory so they don't shadow/contaminate a fresh matched-
+  budget run's corpus glob (see "open threads" below — this exact
+  contamination already happened once this session). Regenerate on demand
+  with `run_1p4M.sh` rather than relying on this snapshot.
+- `archive/testlist_suite_partial_corpora/` — every other stray
+  `corpus_suite_*.json` that was sitting in the live directory (an
+  incomplete `riscv_pmp_suite_test` partial — 127/870 configured seeds —
+  plus ~40 small per-profile files, none of it LLM-CRT-specific). All
+  regenerable via `gen_testlist_corpora.py`.
+
+Nothing in `archive/` is meant to be run against directly — everything in
+it is a regenerable build artifact, kept only so the live directory stays
+navigable.
 
 ## Current status / open threads
 
