@@ -28,5 +28,8 @@ rl-coverage/level9_functional/*.zip
 # Virtual environments
 .venv/
 
+# IDE-local project config
+.idea/
+
 # Large comparison npz (regenerate with compare_agents_l9.py)
 rl-coverage/level9_functional/agent_comparison.npz
