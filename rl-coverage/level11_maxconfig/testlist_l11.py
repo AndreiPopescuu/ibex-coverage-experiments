@@ -42,7 +42,7 @@ from constrained_random_l11 import (  # noqa: E402
 from codec_l11 import N_OPS, IMM_BUCKETS, L11_CSRS, N_CSR_BUCKETS, emit_program  # noqa: E402
 from constrained_llm_l11 import ALL_STREAM_BUILDERS, CATEGORY_WEIGHTS_LLM  # noqa: E402
 
-assert N_OPS == 143
+assert N_OPS == 149
 
 _NOP = 0x00000013  # ADDI x0, x0, 0 — standard RV32 NOP encoding, hardcoded so this file
                     # doesn't need to reach into codec_l11's op-index table for it.
@@ -281,7 +281,6 @@ def _build_llm_rtl_directed(seed):
     while len(actions) < 200:
         actions.append(sample_action(rng_np, CATEGORY_WEIGHTS_LLM))
 
-    rng_py.shuffle(actions)
     return emit_program(actions)
 
 

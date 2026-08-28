@@ -64,7 +64,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from codec_l11 import N_OPS, IMM_BUCKETS, N_CSR_BUCKETS, L11_CSRS, emit_program  # noqa: E402
 
-assert N_OPS == 143
+assert N_OPS == 149
 
 # ── Op categories (index ranges), derived from codec_l11.py / codec_l10.py's
 #    Op enum — see codec_l10.py for the 0-86 base and codec_l11.py's module
@@ -76,7 +76,7 @@ CATEGORIES = {
     "muldiv":     list(range(30, 38)),                        # MUL..REMU
     "branch":     list(range(38, 44)),                        # BEQ..BGEU
     "jump":       [44, 65],                                   # JAL, JALR
-    "compressed": list(range(45, 61)) + list(range(73, 83)),  # C_* ops
+    "compressed": list(range(45, 61)) + list(range(73, 83)) + list(range(143, 149)),  # C_* + Zcmp
     "upper_imm":  [61, 64],                                   # AUIPC, LUI
     "system":     [62, 63, 69, 70, 71, 72],                   # ECALL/EBREAK/FENCE/MRET/WFI/FENCE.I
     "exception":  [83, 84, 85, 86],                            # illegal / misaligned load-store

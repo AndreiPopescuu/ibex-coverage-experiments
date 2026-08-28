@@ -12,9 +12,16 @@ Usage:
     # pay-per-token billing) — separate from a claude.ai Pro/Max chat
     # subscription, which does not by itself grant API access.
 
-    python3 llm_constraint_synth.py                    # calls the API, writes output
-    python3 llm_constraint_synth.py --dry-run           # just prints the prompt, no API call/key needed
+    python3 llm_constraint_synth.py                    # single call, all modules
+    python3 llm_constraint_synth.py --per-module        # one call per RTL module (parallel)
+    python3 llm_constraint_synth.py --dry-run           # print prompts, no API call
     python3 llm_constraint_synth.py --model claude-opus-5
+
+--per-module mode: makes N+1 parallel API calls (one per RTL module + one
+dedicated call for CATEGORY_WEIGHTS). Each module gets its full .sv file
+without truncation since it's the only RTL in its prompt. Results are merged
+into a single constrained_llm_l11.py. Raw responses saved as
+llm_synth_response_<module>.md and llm_synth_response_weights.md.
 
 Writes:
     constrained_llm_l11.py            — extracted Python code (category weights
@@ -24,11 +31,12 @@ Writes:
                                          functions, meant to be reviewed by
                                          hand before use — NOT auto-integrated
                                          into testlist_l11.py/env_l11.py.
-    llm_constraint_synth_response.md  — full raw model response (reasoning +
-                                         code), for review/audit of what RTL
-                                         claims it's making.
+    llm_constraint_synth_response.md  — full raw model response in single mode.
+    llm_synth_response_<name>.md      — per-module raw responses (--per-module).
+    llm_synth_response_weights.md     — weights call raw response (--per-module).
 """
 import argparse
+import concurrent.futures
 import os
 import re
 import sys
@@ -37,9 +45,6 @@ from pathlib import Path
 THIS = Path(__file__).resolve().parent
 CPU  = (THIS.parent.parent / "cpu").resolve()
 L5   = (THIS.parent / "level5_real_rtl").resolve()
-# Vendored RTL is spread across several fusesoc sub-packages under
-# src_upstream/ (ibex_core, ibex_icache, ...) -- search recursively per
-# filename rather than assuming one fixed subdir.
 SRC_UPSTREAM = CPU / "src_upstream"
 
 sys.path.insert(0, str(THIS))
@@ -47,9 +52,6 @@ sys.path.insert(0, str(L5))
 from codec_l11 import L11_CSRS  # noqa: E402
 import cov_parser  # noqa: E402
 
-# Modules tracked by env_l11.py's coverage-shaping (same MODULES list) —
-# reused here so the LLM sees the same module set this project already
-# measures and shapes reward around.
 MODULES = [
     "ibex_core", "ibex_cs_registers", "ibex_top", "ibex_if_stage",
     "ibex_top_tracing", "ibex_alu", "ibex_id_stage", "ibex_multdiv_fast",
@@ -60,10 +62,6 @@ MODULES = [
     "ibex_dummy_instr", "ibex_branch_predict",
 ]
 
-# Modules with a standalone .sv file specific/small enough to be worth
-# showing the LLM in full — cross-cutting glue (ibex_core/ibex_top/
-# ibex_id_stage/ibex_ex_block/...) is skipped: too large and too generic
-# relative to the token budget to usefully reason about here.
 RTL_MODULES_OF_INTEREST = [
     "ibex_pmp", "ibex_cs_registers", "ibex_csr", "ibex_counter",
     "ibex_dummy_instr", "ibex_alu", "ibex_multdiv_fast",
@@ -73,7 +71,6 @@ RTL_MODULES_OF_INTEREST = [
 
 
 def _module_of(key: str) -> str | None:
-    """Same extraction env_l11.py uses on cov_parser's raw point keys."""
     m = re.search(r"page\x02v_toggle/([^\x01]+)\x01", key)
     if not m:
         return None
@@ -81,24 +78,16 @@ def _module_of(key: str) -> str | None:
 
 
 def gather_coverage_summary(dat_paths: list[str]) -> str:
-    """Aggregate the given coverage .dat file(s) into a per-module toggle-
-    coverage % table, so the LLM knows what's weak.
+    """Aggregate coverage .dat file(s) into a per-module toggle % table.
 
-    IMPORTANT: dat_paths defaults to EMPTY (see main()/--coverage-dat) on
-    purpose. This project's cpu/coverage_suite_*.dat files on disk are
-    leftovers from runs of the lowRISC-ported test suite
-    (testlist_l11.py) — feeding those to the LLM here would leak lowRISC's
-    own test strategy's *results* into a pass that's supposed to derive
-    constraints independently of it, defeating the point. If you want a
-    genuinely neutral "coverage so far" baseline instead of RTL-structure-
-    only, first generate one with ZERO domain knowledge (e.g. replay
-    constrained_random_l11.py's plain uniform build_actions() output, not
-    any testlist_l11.py profile) and pass *that* .dat via --coverage-dat.
+    IMPORTANT: dat_paths defaults to EMPTY on purpose — cpu/coverage_suite_*.dat
+    files are leftovers from the lowRISC-ported test suite and would leak its
+    strategy's results into a pass meant to be independent of it.
     """
     if not dat_paths:
         return ("(no coverage data provided — deriving from RTL structure "
-                 "alone, i.e. starting from zero, see gather_coverage_summary()'s "
-                 "docstring for why coverage_suite_*.dat isn't used by default)")
+                "alone, i.e. starting from zero, see gather_coverage_summary()'s "
+                "docstring for why coverage_suite_*.dat isn't used by default)")
 
     dat_files = [Path(p) for p in dat_paths]
     covered = {m: set() for m in MODULES}
@@ -147,6 +136,16 @@ def gather_rtl_snippets(max_chars_per_file: int) -> str:
     return "\n\n".join(parts)
 
 
+def gather_rtl_for_module(name: str, max_chars: int) -> str:
+    f = _find_rtl_file(name)
+    if f is None:
+        return f"### {name}.sv — NOT FOUND anywhere under {SRC_UPSTREAM}"
+    text = f.read_text(errors="replace")
+    if max_chars and len(text) > max_chars:
+        text = text[:max_chars] + "\n... [TRUNCATED — file continues] ..."
+    return f"### {name}.sv\n```systemverilog\n{text}\n```"
+
+
 def gather_action_space_summary() -> str:
     csr_lines = "\n".join(f"  csr_bucket={i}: addr=0x{addr:03x}"
                            for i, addr in enumerate(L11_CSRS))
@@ -185,6 +184,10 @@ comparator needing a specific resolved address), say so explicitly rather
 than inventing a stream that can't actually work in this codec.
 """
 
+
+# ---------------------------------------------------------------------------
+# Single-call mode (original behaviour)
+# ---------------------------------------------------------------------------
 
 PROMPT_TEMPLATE = """You are deriving constrained-random test-generation rules for an \
 Ibex RISC-V CPU core, targeting RTL toggle/branch coverage in a Verilator \
@@ -244,6 +247,69 @@ referencing the specific RTL lines/signals that justify it.
 """
 
 
+# ---------------------------------------------------------------------------
+# Per-module mode prompts
+# ---------------------------------------------------------------------------
+
+PROMPT_TEMPLATE_MODULE = """You are deriving constrained-random test-generation rules for \
+one specific module of the Ibex RISC-V CPU core, targeting RTL toggle/branch \
+coverage in a Verilator testbench.
+
+You are working on: {module_name}
+
+IMPORTANT: Do NOT include CATEGORY_WEIGHTS_LLM — that is handled by a separate \
+call. Focus ONLY on build_*_stream functions for THIS module.
+
+Do NOT reference lowRISC's own verification IP (riscv-dv, UVM testbenches, \
+testlist.yaml) — derive constraints purely from the RTL source below.
+
+Your job: propose ONE or more build_{module_name}_<suffix>_stream(rng) functions \
+-> list[tuple[int, int, int, int, int, int]], where each element is \
+(op, rd, rs1, rs2, imm_bucket, csr_bucket). Each function must target a SPECIFIC \
+RTL structure in {module_name}.sv (a specific always_comb branch, case arm, \
+comparator, FSM state transition). In each function's docstring, cite the EXACT \
+signal/case-arm/state you're targeting and WHY the sequence would toggle it.
+
+If you cannot point to a specific RTL structure, do not invent a stream.
+
+Output ONLY a single ```python fenced code block containing the function(s), \
+plus a short prose section explaining your reasoning, referencing specific \
+RTL lines/signals.
+
+── Per-module toggle coverage (empty = starting from zero) ──────────────────
+{coverage_summary}
+
+── Action space (the ONLY thing your code may produce) ─────────────────────
+{action_space}
+
+── RTL source for {module_name} ─────────────────────────────────────────────
+{rtl_snippet}
+"""
+
+PROMPT_TEMPLATE_WEIGHTS = """You are deriving CATEGORY_WEIGHTS_LLM for constrained-random \
+test generation targeting Ibex RISC-V CPU RTL toggle/branch coverage.
+
+The following RTL modules are tracked. Based on their names and typical RTL \
+complexity, propose a CATEGORY_WEIGHTS_LLM dict that prioritises instruction \
+categories most likely to exercise these modules.
+
+Modules tracked:
+{module_list}
+
+Per-module toggle coverage:
+{coverage_summary}
+
+Action space categories (from the codec):
+  alu 0-18,87-142 | load_store 19-26 | csr 27-29,66-68 | muldiv 30-37 |
+  branch 38-43 | jump 44,65 | compressed 45-60,73-82 | upper_imm 61,64 |
+  system 62,63,69-72 | exception 83-86
+
+Output ONLY a single ```python fenced code block containing:
+  CATEGORY_WEIGHTS_LLM: dict[str, float]  # must sum to 1.0
+with comments explaining WHY each weight was chosen tied to specific modules above.
+"""
+
+
 def build_prompt(max_chars_per_file: int, coverage_dat: list[str]) -> str:
     return PROMPT_TEMPLATE.format(
         coverage_summary=gather_coverage_summary(coverage_dat),
@@ -252,9 +318,25 @@ def build_prompt(max_chars_per_file: int, coverage_dat: list[str]) -> str:
     )
 
 
+def build_module_prompt(name: str, max_chars: int, coverage_dat: list[str]) -> str:
+    return PROMPT_TEMPLATE_MODULE.format(
+        module_name=name,
+        coverage_summary=gather_coverage_summary(coverage_dat),
+        action_space=gather_action_space_summary(),
+        rtl_snippet=gather_rtl_for_module(name, max_chars),
+    )
+
+
+def build_weights_prompt(coverage_dat: list[str]) -> str:
+    return PROMPT_TEMPLATE_WEIGHTS.format(
+        module_list="\n".join(f"  - {m}" for m in RTL_MODULES_OF_INTEREST),
+        coverage_summary=gather_coverage_summary(coverage_dat),
+    )
+
+
 def call_claude(prompt: str, model: str) -> str:
     import anthropic
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    client = anthropic.Anthropic()
     resp = client.messages.create(
         model=model,
         max_tokens=8000,
@@ -268,37 +350,7 @@ def extract_code_block(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", default="claude-sonnet-5",
-                     help="API model id (default: claude-sonnet-5). Use "
-                          "claude-opus-5 for a (slower, pricier) stronger-"
-                          "reasoning pass if the sonnet output looks shallow.")
-    ap.add_argument("--max-chars-per-rtl-file", type=int, default=12000,
-                     help="Truncation limit per .sv file sent (default 12000 "
-                          "chars ~= 3000 tokens; raise for deeper RTL context "
-                          "at proportionally higher API cost).")
-    ap.add_argument("--out-code", default=str(THIS / "constrained_llm_l11.py"))
-    ap.add_argument("--out-response", default=str(THIS / "llm_constraint_synth_response.md"))
-    ap.add_argument("--coverage-dat", nargs="*", default=[],
-                     help="Path(s) to coverage .dat file(s) to summarize as "
-                          "'coverage so far' context. Empty by default ON "
-                          "PURPOSE, i.e. starting from zero — do NOT point this "
-                          "at cpu/coverage_suite_*.dat, those are leftovers from "
-                          "the lowRISC-ported test suite and would leak its "
-                          "strategy's results into a pass meant to be "
-                          "independent of it. Only pass .dat file(s) from a "
-                          "run that used zero domain knowledge (e.g. "
-                          "constrained_random_l11.py's plain uniform "
-                          "build_actions(), not any testlist_l11.py profile).")
-    ap.add_argument("--dry-run", action="store_true",
-                     help="Build and print the prompt without calling the API "
-                          "(no ANTHROPIC_API_KEY needed) — use this first to "
-                          "sanity-check what context would be sent and its "
-                          "approximate size/cost.")
-    args = ap.parse_args()
-
+def run_single(args) -> None:
     prompt = build_prompt(args.max_chars_per_rtl_file, args.coverage_dat)
 
     if args.dry_run:
@@ -306,18 +358,6 @@ def main():
         print(f"\n[dry-run] prompt length: {len(prompt)} chars "
               f"(~{len(prompt) // 4} tokens, rough estimate)", file=sys.stderr)
         return
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit(
-            "ANTHROPIC_API_KEY is not set.\n\n"
-            "This must be an Anthropic Console API key (console.anthropic.com,\n"
-            "pay-per-token billing) — separate from a claude.ai Pro/Max chat\n"
-            "subscription, which does not by itself grant API access.\n\n"
-            "Create a key there, then:\n"
-            "    export ANTHROPIC_API_KEY=sk-ant-...\n"
-            "and re-run this script. Use --dry-run first if you just want to\n"
-            "see what would be sent, without a key."
-        )
 
     print(f"[llm_constraint_synth] calling {args.model} "
           f"(prompt ~{len(prompt) // 4} tokens)...", file=sys.stderr)
@@ -329,7 +369,7 @@ def main():
     code = extract_code_block(response_text)
     if not code:
         sys.exit("No ```python code block found in the response — see "
-                  f"{args.out_response} to inspect what came back instead.")
+                 f"{args.out_response} to inspect what came back instead.")
 
     header = (
         '"""constrained_llm_l11.py — CRT constraints derived by an LLM reading\n'
@@ -342,8 +382,147 @@ def main():
     Path(args.out_code).write_text(header + code)
     print(f"[llm_constraint_synth] wrote extracted constraints -> {args.out_code}")
     print("[llm_constraint_synth] NOT auto-integrated into testlist_l11.py/"
-          "env_l11.py — review constrained_llm_l11.py by hand first, the code "
-          "in it has not been syntax-checked or run.")
+          "env_l11.py — review constrained_llm_l11.py by hand first.")
+
+
+def run_per_module(args) -> None:
+    # In per-module mode each module gets its full .sv without truncation
+    # (only one file per prompt so token budget isn't shared).
+    max_chars = args.max_chars_per_rtl_file  # user can still override
+
+    prompts = {name: build_module_prompt(name, max_chars, args.coverage_dat)
+               for name in RTL_MODULES_OF_INTEREST}
+    weights_prompt = build_weights_prompt(args.coverage_dat)
+
+    if args.dry_run:
+        for name, prompt in prompts.items():
+            print(f"\n{'='*60}\nMODULE: {name}  "
+                  f"({len(prompt)} chars, ~{len(prompt)//4} tokens)\n{'='*60}")
+            print(prompt)
+        print(f"\n{'='*60}\nWEIGHTS PROMPT  "
+              f"({len(weights_prompt)} chars, ~{len(weights_prompt)//4} tokens)\n{'='*60}")
+        print(weights_prompt)
+        total = sum(len(p) for p in prompts.values()) + len(weights_prompt)
+        print(f"\n[dry-run] total: {total} chars (~{total//4} tokens) "
+              f"across {len(prompts)+1} calls", file=sys.stderr)
+        return
+
+    # Fire all module calls in parallel, plus the weights call.
+    results: dict[str, str | None] = {}
+    weights_response: str | None = None
+
+    all_calls: dict[str, str] = dict(prompts)
+    all_calls["__weights__"] = weights_prompt
+
+    print(f"[llm_constraint_synth] firing {len(all_calls)} parallel calls "
+          f"to {args.model}...", file=sys.stderr)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(all_calls)) as ex:
+        futures = {ex.submit(call_claude, prompt, args.model): name
+                   for name, prompt in all_calls.items()}
+        for future in concurrent.futures.as_completed(futures):
+            name = futures[future]
+            try:
+                text = future.result()
+                if name == "__weights__":
+                    weights_response = text
+                else:
+                    results[name] = text
+                print(f"[llm_constraint_synth] done: {name}", file=sys.stderr)
+            except Exception as exc:
+                print(f"[llm_constraint_synth] FAILED: {name}: {exc}", file=sys.stderr)
+                if name != "__weights__":
+                    results[name] = None
+
+    # Save raw responses.
+    out_dir = Path(args.out_response).parent
+    for name, resp in results.items():
+        if resp:
+            (out_dir / f"llm_synth_response_{name}.md").write_text(resp)
+    if weights_response:
+        (out_dir / "llm_synth_response_weights.md").write_text(weights_response)
+
+    # Merge code blocks.
+    parts: list[str] = []
+
+    weights_code = extract_code_block(weights_response or "")
+    if weights_code:
+        parts.append(f"# --- CATEGORY_WEIGHTS (dedicated weights call) ---\n{weights_code.strip()}")
+    else:
+        print("[llm_constraint_synth] WARNING: no python block in weights response",
+              file=sys.stderr)
+
+    for name in RTL_MODULES_OF_INTEREST:
+        resp = results.get(name)
+        if not resp:
+            continue
+        code = extract_code_block(resp)
+        if code:
+            parts.append(f"# --- {name} ---\n{code.strip()}")
+        else:
+            print(f"[llm_constraint_synth] WARNING: no python block for {name}",
+                  file=sys.stderr)
+
+    if not parts:
+        sys.exit("No code blocks extracted from any response — check the raw "
+                 "response files in " + str(out_dir))
+
+    header = (
+        '"""constrained_llm_l11.py — CRT constraints derived by an LLM ensemble\n'
+        "(one API call per RTL module, run in parallel via --per-module mode of\n"
+        "llm_constraint_synth.py). CATEGORY_WEIGHTS from a dedicated summary\n"
+        "call; build_*_stream functions one per module. UNREVIEWED — read before\n"
+        "trusting any RTL claim it makes.\n"
+        '"""\n\n'
+    )
+    merged = "\n\n".join(parts)
+    Path(args.out_code).write_text(header + merged + "\n")
+    print(f"[llm_constraint_synth] wrote merged constraints -> {args.out_code}")
+    print(f"[llm_constraint_synth] {len(parts)} sections merged "
+          f"({len(parts)-1} modules + weights).")
+    print("[llm_constraint_synth] NOT auto-integrated — review by hand first.")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--model", default="claude-sonnet-5",
+                    help="API model id (default: claude-sonnet-5).")
+    ap.add_argument("--max-chars-per-rtl-file", type=int, default=12000,
+                    help="Truncation limit per .sv file (default 12000). "
+                         "In --per-module mode each module gets its own call "
+                         "so you can raise this without multiplying total cost "
+                         "— a value of 0 means no truncation.")
+    ap.add_argument("--per-module", action="store_true",
+                    help="Fire one API call per RTL module in parallel instead "
+                         "of a single call with all modules. Each module gets "
+                         "its full .sv file (no token budget sharing). "
+                         "Results are merged into one constrained_llm_l11.py.")
+    ap.add_argument("--out-code", default=str(THIS / "constrained_llm_l11.py"))
+    ap.add_argument("--out-response", default=str(THIS / "llm_constraint_synth_response.md"))
+    ap.add_argument("--coverage-dat", nargs="*", default=[],
+                    help="Path(s) to coverage .dat file(s). Empty by default — "
+                         "do NOT pass cpu/coverage_suite_*.dat (lowRISC strategy "
+                         "leakage). Only pass .dat from a zero-domain-knowledge run.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Print prompt(s) without calling the API.")
+    args = ap.parse_args()
+
+    if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
+        sys.exit(
+            "ANTHROPIC_API_KEY is not set.\n\n"
+            "This must be an Anthropic Console API key (console.anthropic.com,\n"
+            "pay-per-token billing) — separate from a claude.ai Pro/Max chat\n"
+            "subscription, which does not by itself grant API access.\n\n"
+            "Create a key there, then:\n"
+            "    export ANTHROPIC_API_KEY=sk-ant-...\n"
+            "and re-run this script. Use --dry-run first to preview prompts."
+        )
+
+    if args.per_module:
+        run_per_module(args)
+    else:
+        run_single(args)
 
 
 if __name__ == "__main__":

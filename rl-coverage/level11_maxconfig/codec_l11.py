@@ -95,11 +95,34 @@ illegal_insn pt. OPCODE_OP ({instr[31:25],instr[14:12]}) și OPCODE_OP_IMM
     CRC32.H   imm12=0x611   CRC32C.H  imm12=0x619
     CRC32.W   imm12=0x612   CRC32C.W  imm12=0x61A
 
-Total ops noi (zbp/zbc/zbe/zbf): 9 + 6 + 3 + 2 + 1 + 6 = 27  →  N_OPS = 116 + 27 = 143.
+Total ops noi (zbp/zbc/zbe/zbf): 9 + 6 + 3 + 2 + 1 + 6 = 27  →  143 ops.
 
 Rămân neadăugate (necesită rs3, deci extindere de action-space, nu doar
 codec): CMIX, CMOV, FSL, FSR (R-type, {instr[26],instr[13:12]}=={1,2'b01})
 și FSRI (OP-IMM, f3=101, instr[26]=1).
+
+Zcmp (RV32ZcaZcmp, ibex_compressed_decoder.sv funct3=101 C2 quadrant):
+  cm.push   — 5'b11000 in casez(instr[12:8]): exercitează CmPushStoreReg + CmPushDecrSp
+  cm.pop    — 5'b11010: CmPopLoadReg + CmPopIncrSp, then back to CmIdle
+  cm.popretz — 5'b11100: CmPopLoadReg + CmPopIncrSp + CmPopZeroA0 + CmPopRetRa
+  cm.popret  — 5'b11110: CmPopLoadReg + CmPopIncrSp + CmPopRetRa
+  cm.mvsa01  — casez 5'b011?? + instr[6:5]==01: CmMvSecondReg path (a0/a1 → s-regs)
+  cm.mva01s  — casez 5'b011?? + instr[6:5]==11: CmMvSecondReg path (s-regs → a0/a1)
+
+Encodinguri (16-bit, împachetate ca (C_NOP << 16) | rvc16, same convention as
+codec_l9's _pack_rvc — câte o C_NOP urmează fiecare instrucțiune compressed):
+  bits[15:13]=101 (funct3), bits[1:0]=10 (C2 quadrant)
+  push/pop/popretz/popret: bits[12:8]=funct5, bits[7:4]=rlist, bits[3:2]=spimm
+  mvsa01/mva01s:           bits[12]=0, bits[11:10]=11, bits[9:7]=r1s,
+                           bits[6:5]=01/11, bits[4:2]=r2s
+
+Parameterizare în action-space (rd/rs1/imm_bucket → rlist/spimm/r1s/r2s):
+  rlist  = 4 + (rd % 12)   → 4-15, toate valorile legale
+  spimm  = imm_bucket % 4  → 0-3
+  r1s    = rd % 8
+  r2s    = rs1 % 8
+
+Total ops noi (Zcmp): 6  →  N_OPS = 143 + 6 = 149.
 """
 
 import sys
@@ -183,7 +206,15 @@ SHFLI  = 135; UNSHFLI = 136
 CRC32_B = 137; CRC32_H = 138; CRC32_W = 139
 CRC32C_B = 140; CRC32C_H = 141; CRC32C_W = 142
 
-N_OPS = 143
+# ── Zcmp ops (143..148) — ibex_compressed_decoder.sv funct3=101 C2 quad ─────
+CM_PUSH    = 143  # cm.push   — casez 5'b11000, CmPushStoreReg + CmPushDecrSp
+CM_POP     = 144  # cm.pop    — casez 5'b11010, CmPopLoadReg + CmPopIncrSp
+CM_POPRETZ = 145  # cm.popretz — casez 5'b11100, + CmPopZeroA0 + CmPopRetRa
+CM_POPRET  = 146  # cm.popret  — casez 5'b11110, + CmPopRetRa
+CM_MVSA01  = 147  # cm.mvsa01  — casez 5'b011?? + instr[6:5]==01, CmMvSecondReg
+CM_MVA01S  = 148  # cm.mva01s  — casez 5'b011?? + instr[6:5]==11, CmMvSecondReg
+
+N_OPS = 149
 
 # ── R-type (opcode=0b0110011) ───────────────────────────────────────────────
 _R_F3F7 = {
@@ -238,6 +269,47 @@ _I_FIXED12 = {
 }
 
 
+_C_NOP = 0x0001  # c.nop = c.addi x0, 0 (same as codec_l9._C_NOP)
+
+
+def _pack_rvc(rvc16: int) -> int:
+    """Pack a 16-bit RVC instruction into a 32-bit word as (C_NOP << 16) | rvc16.
+    Same convention as codec_l9._pack_rvc — each compressed slot is followed
+    by one C_NOP so that fetch always sees a valid instruction in the upper half.
+    """
+    return (_C_NOP << 16) | (rvc16 & 0xFFFF)
+
+
+def _zcmp_encode(op_i: int, rd: int, rs1: int, imm_bucket: int) -> int:
+    """Encode one of the 6 Zcmp instructions (16-bit, packed via _pack_rvc).
+
+    Bit layout (C2 quadrant bits[1:0]=10, funct3=101 bits[15:13]):
+      cm.push/pop/popretz/popret: {101, funct5[4:0], rlist[3:0], spimm[1:0], 10}
+        rlist  = 4 + (rd % 12)        → 4-15 (all legal rlist values)
+        spimm  = imm_bucket % 4       → 0-3
+      cm.mvsa01/mva01s: {101, 0, 11, r1s[2:0], mv_sel[1:0], r2s[2:0], 10}
+        r1s    = rd % 8
+        r2s    = rs1 % 8
+        mv_sel = 01 (mvsa01) or 11 (mva01s)
+    """
+    base = (0b101 << 13) | 0b10  # funct3=101, C2 quadrant
+    if op_i in (CM_PUSH, CM_POP, CM_POPRETZ, CM_POPRET):
+        rlist = 4 + (rd % 12)
+        spimm = imm_bucket % 4
+        funct5 = {CM_PUSH: 0b11000, CM_POP: 0b11010,
+                  CM_POPRETZ: 0b11100, CM_POPRET: 0b11110}[op_i]
+        rvc16 = base | (funct5 << 8) | ((rlist & 0xF) << 4) | ((spimm & 0x3) << 2)
+    elif op_i == CM_MVSA01:
+        r1s = rd % 8
+        r2s = rs1 % 8
+        rvc16 = base | (0b011 << 10) | (r1s << 7) | (0b01 << 5) | (r2s << 2)
+    else:  # CM_MVA01S
+        r1s = rd % 8
+        r2s = rs1 % 8
+        rvc16 = base | (0b011 << 10) | (r1s << 7) | (0b11 << 5) | (r2s << 2)
+    return _pack_rvc(rvc16)
+
+
 def _r_type(f7: int, f3: int, rd: int, rs1: int, rs2: int) -> int:
     return (f7 << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) \
          | (f3 << 12) | ((rd & 0x1F) << 7) | 0b0110011
@@ -253,7 +325,12 @@ def _i_fixed(imm12: int, rd: int, rs1: int) -> int:
          | (0b001 << 12) | ((rd & 0x1F) << 7) | 0b0010011
 
 
+_ZCMP_OPS = {CM_PUSH, CM_POP, CM_POPRETZ, CM_POPRET, CM_MVSA01, CM_MVA01S}
+
+
 def encode(op_i: int, rd: int, rs1: int, rs2: int, imm_bucket: int, csr_bucket: int = 0) -> int:
+    if op_i in _ZCMP_OPS:
+        return _zcmp_encode(op_i, rd, rs1, imm_bucket)
     if op_i in _CSR_F3:
         return _encode_csr_l11(_CSR_F3[op_i], rd, rs1, csr_bucket)
     if op_i in _CSRI_F3:
@@ -319,8 +396,36 @@ def _self_test():
     w = encode(27, 1, 2, 0, 0, len(L10_CSRS))  # primul CSR nou (pmpcfg0)
     assert ((w >> 20) & 0xFFF) == 0x3A0, f"pmpcfg0 encoding greșit: 0x{(w>>20)&0xFFF:03x}"
 
+    # Zcmp: verifică structura bit-câmp pentru fiecare op
+    # cm.push rlist=4 spimm=0: bits[15:13]=101, bits[12:8]=11000, bits[7:4]=0100, bits[3:2]=00, bits[1:0]=10
+    w = encode(CM_PUSH, 0, 0, 0, 0)  # rd=0 → rlist=4+0=4, ib=0 → spimm=0
+    rvc = w & 0xFFFF
+    assert (rvc >> 13) == 0b101,    f"cm.push: funct3 != 101, rvc=0x{rvc:04x}"
+    assert ((rvc >> 8) & 0x1F) == 0b11000, f"cm.push: funct5 != 11000"
+    assert ((rvc >> 4) & 0xF) == 4, f"cm.push: rlist != 4"
+    assert ((rvc >> 2) & 0x3) == 0, f"cm.push: spimm != 0"
+    assert (rvc & 0x3) == 0b10,     f"cm.push: quad != C2"
+    assert (w >> 16) == _C_NOP,     f"cm.push: upper half != C_NOP"
+    # cm.pop rlist=6 spimm=1: rd=2 → rlist=4+2=6, ib=1 → spimm=1
+    w = encode(CM_POP, 2, 0, 0, 1)
+    rvc = w & 0xFFFF
+    assert ((rvc >> 8) & 0x1F) == 0b11010, f"cm.pop: funct5 != 11010"
+    assert ((rvc >> 4) & 0xF) == 6, f"cm.pop: rlist != 6"
+    assert ((rvc >> 2) & 0x3) == 1, f"cm.pop: spimm != 1"
+    # cm.mvsa01 r1s=3 r2s=5: rd=3 → r1s=3, rs1=5 → r2s=5
+    w = encode(CM_MVSA01, 3, 5, 0, 0)
+    rvc = w & 0xFFFF
+    assert ((rvc >> 10) & 0x7) == 0b011, f"cm.mvsa01: bits[12:10] != 011"
+    assert ((rvc >> 7) & 0x7) == 3,  f"cm.mvsa01: r1s != 3"
+    assert ((rvc >> 5) & 0x3) == 0b01, f"cm.mvsa01: mv_sel != 01"
+    assert ((rvc >> 2) & 0x7) == 5,  f"cm.mvsa01: r2s != 5"
+    # cm.mva01s: mv_sel should be 11
+    w = encode(CM_MVA01S, 3, 5, 0, 0)
+    rvc = w & 0xFFFF
+    assert ((rvc >> 5) & 0x3) == 0b11, f"cm.mva01s: mv_sel != 11"
+
     print(f"[OK] L11 codec self-test: {N_OPS} ops x {IMM_BUCKETS} buckets "
-          f"(L10={L10_N_OPS} + {N_OPS - L10_N_OPS} RV32B)")
+          f"(L10={L10_N_OPS} + {N_OPS - L10_N_OPS - 6} RV32B + 6 Zcmp)")
     print(f"  CSR pool: {N_CSR_BUCKETS} registre "
           f"(L10={len(L10_CSRS)}, +{N_CSR_BUCKETS - len(L10_CSRS)} max-specific)")
 

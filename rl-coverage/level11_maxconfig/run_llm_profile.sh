@@ -44,6 +44,7 @@ cd "$REPO/cpu"
 if command -v cocotb-config >/dev/null 2>&1; then
     export LD_LIBRARY_PATH="$(dirname "$(cocotb-config --libpython)"):${LD_LIBRARY_PATH:-}"
 fi
+export PYGPI_PYTHON_BIN="$(python3 -c 'import sys; print(sys.executable)')"
 SIM_BUILD=./sim_build_opentitan_upstream
 COV_PARSER="$REPO/rl-coverage/level5_real_rtl/cov_parser.py"
 export SIM_BUILD COV_PARSER
@@ -54,7 +55,7 @@ run_one() {
     dat="coverage_suite_${name}.dat"
     rm -f "$dat"
     echo "=== $name === starting"
-    if MODULE=test_run_for_l8 RL_L8_JSON="$corpus" \
+    if COCOTB_TEST_MODULES=test_run_for_l8 RL_L8_JSON="$corpus" \
         "$SIM_BUILD/Vtop" "+verilator+coverage+file+${dat}" \
         >/dev/null 2>&1; then
         if [ -f "$dat" ]; then
