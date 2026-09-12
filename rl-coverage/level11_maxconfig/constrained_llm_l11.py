@@ -33,6 +33,21 @@ HISTORY
     (csr_depc, debug_cause) confirmed structurally unreachable on this
     codec/build -- see the per-function docstrings below for exact RTL
     citations; no streams were fabricated for those.
+  Pass 4 (4 isolated synthesis agents + 1 review agent, baseline 84.00%
+    toggle, 597 seeds): ibex_counter (4 streams), ibex_csr (3 streams),
+    ibex_alu (2 streams), ibex_decoder (2 streams). Each agent given ONLY
+    the target RTL + exact gap-report output + codec_l11.py action-space
+    description.  Review agent caught a critical op-index bug in both
+    ibex_alu streams (_XOR=2 should be 5, _OR=5 should be 8); fixed before
+    merge.  Unreachability findings: HPM counter[63:32]/counter_val_upd_o
+    [63:32] (narrow instances, g_counter_narrow:90); counterh_we_i for
+    HPM cnt=3..12 (CSRs 0xB83..0xB8C not in L11_CSRS); rd_error_o[13:0]
+    (ShadowCSR=0 at ibex_core.sv:182); debug-mode CSR wr_en_i bits (4)
+    (debug_mode_i unreachable from instruction stream); bfp_mask[31:16]
+    (bfp_len 5-bit field, max=16 → never sets bits [31:16]);
+    shift_funnel/shift_amt[5] (FSL/FSR absent from codec); zimm_rs1_type_o
+    [31:5] (hardwired 27'b0); imm_u_type_o[11:0], imm_b/j_type_o[0]
+    (alignment zeros); illegal_reg_rv32e (RV32E=0 localparam).
 
 FIX METHODOLOGY APPLIED (see individual docstrings for per-function detail):
   - "CSRRW/CSRRS/CSRRC with an unconstrained register never guarantees the
@@ -2087,6 +2102,342 @@ def build_ibex_icache_branch_density_stale_fill_stream(rng):
 
 
 # ---------------------------------------------------------------------------
+# Pass 4 streams — ibex_counter, ibex_csr, ibex_alu, ibex_decoder
+# ---------------------------------------------------------------------------
+
+def build_counter_minstret_overflow_stream(rng):
+    """Target ibex_counter.sv: bits[63:32] of counter/counter_val_o/counter_val_upd_o.
+
+    ibex_counter.sv:30  counter_upd = counter[CounterWidth-1:0] + 1 (combinational adder)
+    ibex_counter.sv:100 counter = counter_q          (g_counter_full, CounterWidth=64)
+    ibex_counter.sv:103 counter_val_upd_o = counter_upd  (ProvideValUpd=1 arm)
+    ibex_counter.sv:105 counter_val_upd_o = '0             (ProvideValUpd=0 arm)
+    ibex_counter.sv:109 counter_val_o = counter
+    ibex_counter.sv:90  counter[63:CounterWidth] = '0  (g_counter_narrow, stuck low)
+
+    Only minstret (ibex_cs_registers.sv:1393-1394, CounterWidth=64, ProvideValUpd=1)
+    can produce non-zero counter_val_upd_o.  mcycle has ProvideValUpd=0 -> always '0.
+    All 10 HPM variable counters use MHPMCounterWidth=32 (cocotb_ibex_opentitan_upstream.sv:52-53);
+    their counter[63:32] and counter_val_upd_o[63:32] are hardwired '0 -- STRUCTURALLY UNREACHABLE.
+
+    Strategy: write 0xFFFFFFFF to minstret (bucket=10, CSR 0xB02) -> counter_q =
+    0x00000000_FFFFFFFF.  Retiring one instruction (ADDI) increments minstret to
+    0x1_00000000 -- bit 32 transitions 0->1 on counter_upd / counter_val_upd_o /
+    counter / counter_val_o.  Writing 0 resets -> bit 32 transitions 1->0.
+
+    0xFFFFFFFF: ADDI rx, x0, -2048 (imm_bucket=0) -> 0xFFFFF800; ORI ry, rx, 2047 (bucket=4) -> 0xFFFFFFFF
+    """
+    stream = []
+    ADDI = 10; ORI = 14; CSRRW = 27; CSRRS = 28
+    minstret_bucket  = 10   # L11_CSRS[10] = 0xB02 (minstret)
+    minstreth_bucket = 12   # L11_CSRS[12] = 0xB82 (minstreth)
+
+    for _ in range(4):
+        rx = rng.randint(1, 31)
+        ry = rng.randint(1, 31)
+        while ry == rx:
+            ry = rng.randint(1, 31)
+        stream.append((ADDI, rx, 0,  0, 0, 0))
+        stream.append((ORI,  ry, rx, 0, 4, 0))
+        stream.append((CSRRW, rng.randint(1, 31), ry, 0, 2, minstret_bucket))
+        stream.append((ADDI, rng.randint(1, 31), rng.randint(1, 31), 0, 2, 0))
+        stream.append((CSRRS, rng.randint(1, 31), 0, 0, 2, minstret_bucket))
+        stream.append((CSRRS, rng.randint(1, 31), 0, 0, 2, minstreth_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), 0, 0, 2, minstret_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), ry, 0, 2, minstreth_bucket))
+    return stream
+
+
+def build_counter_load_high_bits_stream(rng):
+    """Target ibex_counter.sv: counter_load[63:32] for 64-bit mcycle/minstret instances.
+
+    ibex_counter.sv:36 counter_load[63:32] = counter[63:32]   (default)
+    ibex_counter.sv:39 counter_load[63:32] = counter_val_i    (counterh_we_i arm)
+    ibex_counter.sv:90 counter[63:CounterWidth] = '0  (g_counter_narrow, hardwired)
+
+    For 32-bit HPM instances: counter_load[63:32] STRUCTURALLY UNREACHABLE.
+    For 64-bit mcycle (bucket=11, 0xB80) and minstret (bucket=12, 0xB82):
+    writing asserts counterh_we_i -> counter_load[63:32] = csr_wdata_int.
+    Sweep 0xFFFFFFFF <-> 0 covers all 32 bits.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; CSRRW = 27; CSRRS = 28
+    mcycleh_bucket   = 11
+    minstreth_bucket = 12
+
+    for _ in range(4):
+        rx = rng.randint(1, 31)
+        ry = rng.randint(1, 31)
+        while ry == rx:
+            ry = rng.randint(1, 31)
+        stream.append((ADDI, rx, 0,  0, 0, 0))
+        stream.append((ORI,  ry, rx, 0, 4, 0))
+        stream.append((CSRRW, rng.randint(1, 31), ry, 0, 2, mcycleh_bucket))
+        stream.append((CSRRS, rng.randint(1, 31), 0,  0, 2, mcycleh_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), 0,  0, 2, mcycleh_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), ry, 0, 2, minstreth_bucket))
+        stream.append((CSRRS, rng.randint(1, 31), 0,  0, 2, minstreth_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), 0,  0, 2, minstreth_bucket))
+    return stream
+
+
+def build_counter_upd_high_bits_stream(rng):
+    """Target ibex_counter.sv: counter_upd bits[31:21] for 32-bit HPM counter instances.
+
+    ibex_counter.sv:30 counter_upd = counter[CounterWidth-1:0] + 1
+    MHPMCounterWidth=32 (cocotb_ibex_opentitan_upstream.sv:52-53).
+    Bits[31:21] are 0 unless counter >= 0x200000. HPM counters rarely reach this.
+
+    Strategy: CSRRW HPM counter with 0xFFFFF800 (ADDI rd, x0, -2048, bucket=0).
+    counter_upd = 0xFFFFF801 -> bits[31:11] all-1 (0->1). Writing 0 -> bits[31:11]=0 (1->0).
+
+    mhpmcounter3..8 = buckets 14..19; mhpmcounter9..14 = buckets 56..61.
+    """
+    stream = []
+    ADDI = 10; CSRRW = 27
+    hpm_buckets = list(range(14, 20)) + list(range(56, 62))
+    minstret_bucket = 10
+
+    for _ in range(2):
+        rx = rng.randint(1, 31)
+        stream.append((ADDI, rx, 0, 0, 0, 0))
+        for bucket in hpm_buckets:
+            stream.append((CSRRW, rng.randint(1, 31), rx, 0, 2, bucket))
+            stream.append((CSRRW, rng.randint(1, 31), 0,  0, 2, bucket))
+        stream.append((CSRRW, rng.randint(1, 31), rx, 0, 2, minstret_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), 0,  0, 2, minstret_bucket))
+    return stream
+
+
+def build_counterh_we_explicit_stream(rng):
+    """Target ibex_counter.sv: counterh_we_i remaining 2 toggle bins.
+
+    ibex_counter.sv:38 if (counterh_we_i): counter_load[63:32] = counter_val_i;
+    mhpmcounterh_we[0] (mcycle, bucket=11, 0xB80) and [2] (minstret, bucket=12, 0xB82) reachable.
+    HPM Cnt=3..12 counterh_we_i: CSR 0xB83..0xB8C NOT in L11_CSRS -> STRUCTURALLY UNREACHABLE.
+
+    CSRRWI (op=66) with uimm=1: rs1 treated as literal uimm (codec_l11.py:174).
+    Guarantees csr_wr=1, csr_we_int=1 -> counterh_we_i asserted (0->1).
+    CSRRS rs1=x0 (op=28, rs1=0): csr_wr=0 (CSR_OP_READ) -> counterh_we_i de-asserted (1->0).
+    """
+    stream = []
+    CSRRWI = 66; CSRRS = 28
+    mcycleh_bucket   = 11
+    minstreth_bucket = 12
+
+    for _ in range(8):
+        stream.append((CSRRWI, rng.randint(1, 31), 1, 0, 2, mcycleh_bucket))
+        stream.append((CSRRS,  rng.randint(1, 31), 0, 0, 2, mcycleh_bucket))
+        stream.append((CSRRWI, rng.randint(1, 31), 1, 0, 2, minstreth_bucket))
+        stream.append((CSRRS,  rng.randint(1, 31), 0, 0, 2, minstreth_bucket))
+    return stream
+
+
+def build_mie_irq_fast_stream(rng):
+    """Target ibex_csr.sv: mie CSR upper bits (irq_fast[14:0] = mie[30:16]).
+
+    ibex_cs_registers.sv: mie_q[30:16] = irq_fast_en.
+    LUI_IMM_BUCKETS[3] = 0xFFFFF -> LUI rd, 0xFFFFF -> rd = 0xFFFFF000.
+    CSRRW mie (bucket=30, CSR 0x304) with rd writes 0xFFFFF000 -> mie[30:16] all-1.
+    CSRRW mie with x0 -> mie[30:16] all-0. Toggles all irq_fast bits.
+    """
+    stream = []
+    LUI = 64; CSRRW = 27
+    mie_bucket = 30   # L11_CSRS[30] = 0x304 (mie)
+
+    for _ in range(8):
+        rd = rng.randint(1, 31)
+        stream.append((LUI, rd, 0, 0, 3, 0))
+        stream.append((CSRRW, rng.randint(1, 31), rd, 0, 2, mie_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), 0,  0, 2, mie_bucket))
+    return stream
+
+
+def build_mcause_irq_bits_stream(rng):
+    """Target ibex_csr.sv: mcause[30:16] (irq_int) and mcause[31] (irq_ext).
+
+    CSRRW mcause (bucket=2, CSR 0x342):
+    LUI_IMM_BUCKETS[4] = 0x80000 -> rd = 0x80000000: sets mcause[31] (irq_ext).
+    LUI_IMM_BUCKETS[3] = 0xFFFFF -> rd = 0xFFFFF000: sets mcause[30:12].
+    Alternating write/clear covers all bits; x0 write clears all.
+    """
+    stream = []
+    LUI = 64; CSRRW = 27
+    mcause_bucket = 2   # L11_CSRS[2] = 0x342 (mcause)
+
+    for _ in range(8):
+        ra = rng.randint(1, 31)
+        rb = rng.randint(1, 31)
+        while rb == ra:
+            rb = rng.randint(1, 31)
+        stream.append((LUI, ra, 0, 0, 4, 0))
+        stream.append((CSRRW, rng.randint(1, 31), ra, 0, 2, mcause_bucket))
+        stream.append((LUI, rb, 0, 0, 3, 0))
+        stream.append((CSRRW, rng.randint(1, 31), rb, 0, 2, mcause_bucket))
+        stream.append((CSRRW, rng.randint(1, 31), 0,  0, 2, mcause_bucket))
+    return stream
+
+
+def build_csr_upper_bits_stream(rng):
+    """Target ibex_csr.sv: upper bits of mscratch/mepc/mtval via LUI sweeps.
+
+    LUI_IMM_BUCKETS: {0:0x00001, 1:0x12345, 2:0xABCDE, 3:0xFFFFF, 4:0x80000}.
+    LUI rd, imm -> rd = imm << 12; CSRRW dest_csr, rd writes that full 32-bit value.
+    mscratch=bucket=0 (0x340), mepc=bucket=1 (0x341), mtval=bucket=3 (0x343).
+    mtvec EXCLUDED: writing mtvec redirects the trap handler, breaking cocotb.
+    rd_error_o EXCLUDED: ShadowCSR=0 localparam (ibex_core.sv:182) -> gen_shadow never
+    elaborated -> rd_error_o permanently 0, STRUCTURALLY UNREACHABLE.
+    debug-mode CSR wr_en_i[3:0] EXCLUDED: dcsr/depc/dscratch reachable only in
+    debug mode; debug_mode_i never asserted from instruction stream,
+    STRUCTURALLY UNREACHABLE.
+    """
+    stream = []
+    LUI = 64; CSRRW = 27
+    # bucket index -> L11_CSRS index
+    csr_targets = [0, 1, 3]   # mscratch(0x340), mepc(0x341), mtval(0x343)
+    lui_buckets = [0, 1, 2, 3, 4]
+
+    for _ in range(4):
+        for csr_b in csr_targets:
+            for ib in lui_buckets:
+                rd = rng.randint(1, 31)
+                stream.append((LUI, rd, 0, 0, ib, 0))
+                stream.append((CSRRW, rng.randint(1, 31), rd, 0, 2, csr_b))
+            stream.append((CSRRW, rng.randint(1, 31), 0, 0, 2, csr_b))
+    return stream
+
+
+def build_bcompress_decompress_stream(rng):
+    """Target ibex_alu.sv: butterfly_result, invbutterfly_result, imd_val_d_o[1], imd_val_we_o[1].
+
+    ibex_alu.sv: BCOMPRESS(op=128) / BDECOMPRESS(op=129) are two-cycle ops.
+    Cycle 1: imd_val_we_o[1]=1, imd_val_d_o[1] = butterfly_result (intermediate).
+    Cycle 2: imd_val_we_o[1]=0, result = invbutterfly_result (BDECOMPRESS) or
+             butterfly_result (BCOMPRESS).
+
+    XOR used for richer operand_a variation (op=5 in codec_l11.py Op enum;
+    NOT op=2 which is SLL).
+    OR used to combine partial masks (op=8 in codec_l11.py Op enum;
+    NOT op=5 which is XOR).
+    ADDI=10, ORI=14 remain unchanged.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; _XOR = 5; _OR = 8
+    BCOMPRESS = 128; BDECOMPRESS = 129
+
+    for _ in range(8):
+        ra = rng.randint(1, 31)
+        rb = rng.randint(1, 31)
+        rc = rng.randint(1, 31)
+        rd = rng.randint(1, 31)
+        stream.append((ADDI, ra, 0, 0, rng.randint(0, 4), 0))
+        stream.append((ORI,  rb, ra, 0, rng.randint(0, 4), 0))
+        stream.append((_XOR, rc, ra, rb, 0, 0))
+        stream.append((_OR,  rd, ra, rb, 0, 0))
+        stream.append((BCOMPRESS,   rng.randint(1, 31), rc, rd, 0, 0))
+        stream.append((BDECOMPRESS, rng.randint(1, 31), rc, rd, 0, 0))
+        stream.append((BCOMPRESS,   rng.randint(1, 31), rb, rc, 0, 0))
+        stream.append((BDECOMPRESS, rng.randint(1, 31), rb, rc, 0, 0))
+    return stream
+
+
+def build_bfp_sweep_stream(rng):
+    """Target ibex_alu.sv: BFP operation with varied control words.
+
+    ibex_alu.sv: BFP(op=130). Control word rs2[29:27]=bfp_off (3-bit),
+    rs2[20:16]=bfp_len (5-bit, 0=16, else bfp_len; max effective=16).
+    bfp_mask[31:16] CONFIRMED UNREACHABLE: bfp_len max=16 -> mask width=16,
+    mask is always placed in bits[15:0] (after rotation), never in [31:16].
+
+    XOR-combos: 0xFFFFF800^0x7FF=0xFFFFFFFF, 0xFFFFFF9C^0x64=0xFFFFFFFC.
+    op=5 is XOR (not SLL=2), op=8 is OR (not XOR=5) in codec_l11.py.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; _XOR = 5; _OR = 8
+    BFP = 130
+
+    for _ in range(8):
+        ra = rng.randint(1, 31)
+        rb = rng.randint(1, 31)
+        rc = rng.randint(1, 31)
+        rd = rng.randint(1, 31)
+        stream.append((ADDI, ra, 0, 0, 0, 0))
+        stream.append((ORI,  rb, ra, 0, 4, 0))
+        stream.append((_XOR, rc, rb, ra, 0, 0))
+        stream.append((_OR,  rd, ra, rb, 0, 0))
+        stream.append((BFP, rng.randint(1, 31), rc, rb, 0, 0))
+        stream.append((BFP, rng.randint(1, 31), rd, rc, 0, 0))
+        stream.append((BFP, rng.randint(1, 31), ra, rd, 0, 0))
+        stream.append((ADDI, ra, 0, 0, rng.randint(1, 4), 0))
+        stream.append((ORI,  rb, ra, 0, rng.randint(0, 3), 0))
+        stream.append((BFP, rng.randint(1, 31), rb, ra, 0, 0))
+    return stream
+
+
+def build_decoder_zimm_rs1_full_rs1_sweep_stream(rng):
+    """Target ibex_decoder.sv zimm_rs1_type_o[4:0] -- exhaustive rs1 field sweep.
+
+    RTL line 145: assign zimm_rs1_type_o = { 27'b0, instr_rs1 };
+    instr_rs1 = instr[19:15] (line 169).
+
+    The 27 missing coverage bins for zimm_rs1_type_o are bits [31:5], which are
+    HARDWIRED ZERO (literal 27'b0) -- structurally unreachable, cannot be toggled.
+
+    Bits [4:0] come from rs1 field and DO toggle. This stream emits all 32 possible
+    rs1-field values (0x00..0x1F) via CSRRWI/CSRRSI/CSRRCI (codec_l11.py:174,
+    _encode_csri_l11: uimm placed at instr[19:15]). Mixed with CSRRW/CSRRS/CSRRC
+    to exercise both IMM_A_Z and OP_A_REG_A decode paths.
+
+    csr_bucket=0 -> mscratch (0x340): safe scratchpad.
+    """
+    CSRRWI, CSRRSI, CSRRCI = 66, 67, 68
+    CSRRW, CSRRS, CSRRC    = 27, 28, 29
+    imm_csri_ops = [CSRRWI, CSRRSI, CSRRCI]
+    imm_csr_ops  = [CSRRW,  CSRRS,  CSRRC]
+    stream = []
+    for uimm in range(32):
+        op = rng.choice(imm_csri_ops)
+        stream.append((op, rng.randint(1, 31), uimm, 0, 2, 0))
+    for rs1 in range(1, 32):
+        op = rng.choice(imm_csr_ops)
+        stream.append((op, rng.randint(1, 31), rs1, 0, 2, 0))
+    return stream
+
+
+def build_decoder_imm_upper_bits_sweep_stream(rng):
+    """Target ibex_decoder.sv imm_u_type_o[31:12], imm_b_type_o[31:1], imm_j_type_o[31:1].
+
+    HARDWIRED-ZERO bits (structurally unreachable):
+      imm_u_type_o[11:0]  -- RTL line 139: assign imm_u_type_o = { instr[31:12], 12'b0 }
+      imm_b_type_o[0]     -- RTL line 138: trailing 1'b0 (B-type always 2-aligned)
+      imm_j_type_o[0]     -- RTL line 140: trailing 1'b0 (J-type always 2-aligned)
+
+    The 12 missing imm_u_type_o bins = bits[11:0] (hardwired zero, unreachable).
+    The 1 missing imm_b_type_o bin = bit[0] (hardwired zero, unreachable).
+    The 1 missing imm_j_type_o bin = bit[0] (hardwired zero, unreachable).
+
+    This stream maximises toggle on the REACHABLE bits via all 5 imm_buckets and
+    all instruction variants (LUI, AUIPC, 6 branch ops, JAL).
+    """
+    LUI, AUIPC = 64, 61
+    JAL = 44
+    BRANCHES = [38, 39, 40, 41, 42, 43]
+    stream = []
+    for _ in range(4):
+        for op in [LUI, AUIPC]:
+            for ib in range(5):
+                stream.append((op, rng.randint(1, 31), 0, 0, ib, 0))
+    for _ in range(3):
+        for op in BRANCHES:
+            for ib in range(5):
+                stream.append((op, 0, rng.randint(0, 31), rng.randint(0, 31), ib, 0))
+    for _ in range(6):
+        for ib in range(5):
+            stream.append((JAL, rng.randint(1, 31), 0, 0, ib, 0))
+    return stream
+
+
+# ---------------------------------------------------------------------------
 # Convenience: all streams as a list for external callers
 # ---------------------------------------------------------------------------
 
@@ -2107,12 +2458,21 @@ ALL_STREAM_BUILDERS = [
     # ibex_csr (2 -- build_csr_shadow_stream deleted, RTL unreachable, see header)
     build_ibex_csr_wr_en_stream,
     build_ibex_csr_reset_path_stream,
+    # ibex_csr (3) -- Pass 4
+    build_mie_irq_fast_stream,
+    build_mcause_irq_bits_stream,
+    build_csr_upper_bits_stream,
     # ibex_counter (5)
     build_counter_write_stream,
     build_counter_write_high_stream,
     build_counter_inc_stream,
     build_counter_inhibit_stream,
     build_counter_hpmcounter_stream,
+    # ibex_counter (4) -- Pass 4
+    build_counter_minstret_overflow_stream,
+    build_counter_load_high_bits_stream,
+    build_counter_upd_high_bits_stream,
+    build_counterh_we_explicit_stream,
     # ibex_dummy_instr (5)
     build_dummy_instr_enable_stream,
     build_dummy_instr_seed_stream,
@@ -2122,6 +2482,9 @@ ALL_STREAM_BUILDERS = [
     # ibex_alu (2)
     build_alu_compare_sign_mismatch_stream,
     build_alu_rv32b_stream,
+    # ibex_alu (2) -- Pass 4
+    build_bcompress_decompress_stream,
+    build_bfp_sweep_stream,
     # ibex_multdiv_fast (4)
     build_multdiv_signed_fsm_stream,
     build_multdiv_mulh_stream,
@@ -2163,6 +2526,9 @@ ALL_STREAM_BUILDERS = [
     build_decoder_illegal_default_reset_stream,
     # ibex_decoder (1) -- Pass 3, bt_a_mux_sel_o diversity
     build_decoder_bt_a_mux_sel_reg_a_diversity_stream,
+    # ibex_decoder (2) -- Pass 4
+    build_decoder_zimm_rs1_full_rs1_sweep_stream,
+    build_decoder_imm_upper_bits_sweep_stream,
     # ibex_compressed_decoder (6) -- merged from _draft_streams_compressed_decoder.py
     build_compressed_c1_alu_shift_ca_mux_stream,
     build_compressed_c2_reg_ctrl_mux_stream,
@@ -2178,4 +2544,4 @@ ALL_STREAM_BUILDERS = [
     build_ibex_icache_branch_density_stale_fill_stream,
 ]
 
-assert len(ALL_STREAM_BUILDERS) == 68, len(ALL_STREAM_BUILDERS)
+assert len(ALL_STREAM_BUILDERS) == 79, len(ALL_STREAM_BUILDERS)
