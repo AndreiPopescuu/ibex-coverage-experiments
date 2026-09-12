@@ -55,7 +55,7 @@ run_one() {
     dat="coverage_suite_${name}.dat"
     rm -f "$dat"
     echo "=== $name === starting"
-    if COCOTB_TEST_MODULES=test_run_for_l8 RL_L8_JSON="$corpus" \
+    if MODULE=test_run_for_l8 RL_L8_JSON="$corpus" \
         "$SIM_BUILD/Vtop" "+verilator+coverage+file+${dat}" \
         >/dev/null 2>&1; then
         if [ -f "$dat" ]; then
