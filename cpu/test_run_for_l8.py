@@ -67,6 +67,29 @@ def _lui_w(rd, imm20):
 def _csrrw_w(rd, rs1, csr):
     return ((csr & 0xFFF) << 20) | ((rs1 & 0x1F) << 15) | (0b001 << 12) | ((rd & 0x1F) << 7) | 0b1110011
 
+def _csrrsi_w(rd, uimm5, csr):
+    # CSRRSI: funct3=110, uimm5 occupies the rs1 field (bits 19:15); no register read
+    return ((csr & 0xFFF) << 20) | ((uimm5 & 0x1F) << 15) | (0b110 << 12) | ((rd & 0x1F) << 7) | 0b1110011
+
+def _srli_w(rd, rs1, shamt):
+    # Shift-right-logical: funct7=0000000, shamt in bits 24:20, funct3=101
+    return ((shamt & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | (0b101 << 12) | ((rd & 0x1F) << 7) | 0b0010011
+
+def _bne_w(rs1, rs2, imm):
+    # B-type: imm is a signed byte offset from the BNE instruction itself; must be even
+    # Encoding: [31]=imm[12], [30:25]=imm[10:5], [24:20]=rs2, [19:15]=rs1,
+    #           [14:12]=001, [11:8]=imm[4:1], [7]=imm[11], [6:0]=1100011
+    return (
+        (((imm >> 12) & 1) << 31) |
+        (((imm >> 5) & 0x3F) << 25) |
+        ((rs2 & 0x1F) << 20) |
+        ((rs1 & 0x1F) << 15) |
+        (0b001 << 12) |
+        (((imm >> 1) & 0xF) << 8) |
+        (((imm >> 11) & 1) << 7) |
+        0b1100011
+    )
+
 
 def _build_prologue():
     p = []
@@ -122,6 +145,14 @@ def _build_prologue():
     for r in range(24, 32):
         emit(_addi_w(r, 0, r))
 
+    # Enable all machine interrupt sources: write 0xFFFFFFFF to mie (0x304)
+    # ADDI x10, x0, -1 encodes imm=0xFFF which sign-extends to 0xFFFFFFFF
+    emit(_addi_w(10, 0, 0xFFF))           # x10 = 0xFFFFFFFF (all bits set)
+    emit(_csrrw_w(0, 10, 0x304))          # CSR[mie] = x10   (0x304 = mie, M-mode interrupt-enable)
+    # Set mstatus.MIE (bit 3) to globally enable M-mode interrupts
+    # CSRRSI x0, mstatus, 8 ORs uimm=8 (bit 3) into mstatus (0x300)
+    emit(_csrrsi_w(0, 8, 0x300))          # CSR[mstatus] |= 8 (0x300 = mstatus, bit3 = MIE)
+
     return p
 
 
@@ -129,25 +160,36 @@ PROLOGUE = _build_prologue()
 
 TRAP_HANDLER_ADDR = 0x00200000
 
-# Enhanced trap handler: reads mepc, mcause, mtval; advances mepc by 4; MRET.
-# This exercises more CSR-register read paths in ibex_cs_registers.
+# Interrupt-aware trap handler.
+#
+# Layout (each instruction at a 4-byte offset from TRAP_HANDLER_ADDR):
+#   +0:  CSRRS x10, mepc,   x0  — save mepc
+#   +4:  CSRRS x11, mcause, x0  — read mcause; bit 31 = 1 → interrupt, 0 → exception
+#   +8:  CSRRS x12, mtval,  x0  — read mtval  (exercises another CSR read path)
+#   +12: SRLI  x13, x11, 31     — x13 = mcause[31]: 1=interrupt, 0=exception
+#   +16: BNE   x13, x0, +8     — if interrupt: skip mepc advance (jump to +24)
+#   +20: ADDI  x10, x10, 4     — exception only: advance past faulting instruction
+#   +24: CSRRW x0,  mepc, x10  — write (possibly updated) mepc back
+#   +28: MRET                   — return from trap; re-enables MIE via mstatus.MPIE
 def _build_trap_handler():
     p = []
-    # x10 = mepc
-    p.append(0x34102573)   # CSRRS x10, 0x341, x0
-    # x11 = mcause
-    p.append(0x34202573 | (11 << 7))  # CSRRS x11, 0x342, x0
-    # Actually encode properly:
-    # CSRRS rd=x11, rs1=x0, csr=0x342
-    p[-1] = (0x342 << 20) | (0 << 15) | (0b010 << 12) | (11 << 7) | 0b1110011
-    # x12 = mtval
-    p.append((0x343 << 20) | (0 << 15) | (0b010 << 12) | (12 << 7) | 0b1110011)
-    # x10 = mepc + 4
-    p.append(_addi_w(10, 10, 4))
-    # mepc = x10
-    p.append(0x34151073)   # CSRRW x0, 0x341, x10
-    # MRET
-    p.append(MRET)
+    # offset +0: x10 = mepc (0x341 = mepc CSR, M-mode exception PC)
+    p.append((0x341 << 20) | (0 << 15) | (0b010 << 12) | (10 << 7) | 0b1110011)  # CSRRS x10, mepc, x0
+    # offset +4: x11 = mcause (0x342 = mcause CSR; bit 31 distinguishes interrupt vs exception)
+    p.append((0x342 << 20) | (0 << 15) | (0b010 << 12) | (11 << 7) | 0b1110011)  # CSRRS x11, mcause, x0
+    # offset +8: x12 = mtval (0x343 = mtval CSR; exercises a third CSR read path)
+    p.append((0x343 << 20) | (0 << 15) | (0b010 << 12) | (12 << 7) | 0b1110011)  # CSRRS x12, mtval, x0
+    # offset +12: x13 = mcause >> 31  → 1 if interrupt, 0 if exception
+    p.append(_srli_w(13, 11, 31))    # SRLI x13, x11, 31
+    # offset +16: if x13 != 0 (interrupt): branch forward by +8 bytes to offset +24 (CSRRW)
+    # imm=+8: target = PC_of_this_insn + 8 = (TRAP_HANDLER_ADDR+16) + 8 = +24 ✓
+    p.append(_bne_w(13, 0, 8))       # BNE x13, x0, +8
+    # offset +20: exception path only — advance mepc past the faulting instruction
+    p.append(_addi_w(10, 10, 4))     # ADDI x10, x10, 4
+    # offset +24: write mepc back (0x341 = mepc CSR)
+    p.append(_csrrw_w(0, 10, 0x341)) # CSRRW x0, mepc, x10  (= 0x34151073)
+    # offset +28: return from trap; hardware restores MIE from MPIE
+    p.append(MRET)                   # 0x30200073
     return p
 
 TRAP_HANDLER = _build_trap_handler()
@@ -187,6 +229,45 @@ PROGRAM_PATH = os.environ.get(
 )
 
 
+async def irq_driver(dut, seed):
+    """Randomly assert interrupt lines to drive interrupt-handling coverage.
+
+    debug_req_i is intentionally kept at 0 (exposed as a port for wiring only).
+    irq_nm_i (non-maskable interrupt) is also kept at 0 to avoid non-maskable
+    re-entry complications with the simple trap handler above.
+    """
+    import random
+    rng = random.Random(seed)
+    # Initialise all interrupt lines to deasserted
+    dut.irq_fast_i.value     = 0
+    dut.irq_external_i.value = 0
+    dut.irq_software_i.value = 0
+    dut.irq_timer_i.value    = 0
+    dut.irq_nm_i.value       = 0
+    dut.debug_req_i.value    = 0   # kept at 0 (port exposed for completeness, not driven)
+
+    # Wait for the prologue to finish configuring mtvec, mie, and mstatus.MIE
+    # before injecting any interrupt. The prologue is ~50 instructions * ~5 CPI
+    # at most, so 300 cycles is a comfortable margin.
+    await ClockCycles(dut.clk_i, 300)
+
+    while True:
+        # Random quiet period between assertions (30–150 cycles)
+        await ClockCycles(dut.clk_i, rng.randint(30, 150))
+        # Assert a random mix of maskable interrupt lines
+        dut.irq_fast_i.value     = rng.randint(1, 0x7FFF)   # at least one fast-IRQ bit set
+        dut.irq_external_i.value = rng.randint(0, 1)
+        dut.irq_software_i.value = rng.randint(0, 1)
+        dut.irq_timer_i.value    = rng.randint(0, 1)
+        # Hold for 5 cycles then deassert — short enough that the CPU completes the
+        # trap handler before the next assertion, preventing un-handled re-entry.
+        await ClockCycles(dut.clk_i, 5)
+        dut.irq_fast_i.value     = 0
+        dut.irq_external_i.value = 0
+        dut.irq_software_i.value = 0
+        dut.irq_timer_i.value    = 0
+
+
 @cocotb.test()
 async def run_program(dut):
     with open(PROGRAM_PATH) as f:
@@ -197,6 +278,14 @@ async def run_program(dut):
 
     dut.data_gnt_i.value = 0
     dut.data_rvalid_i.value = 0
+
+    # Initialise interrupt ports to 0 before reset (belt-and-suspenders alongside irq_driver)
+    dut.irq_fast_i.value     = 0
+    dut.irq_external_i.value = 0
+    dut.irq_software_i.value = 0
+    dut.irq_timer_i.value    = 0
+    dut.irq_nm_i.value       = 0
+    dut.debug_req_i.value    = 0
 
     imem = MemAgent(dut, "instr", handle_writes=False)
     dmem = DiverseMemAgent(dut, "data", handle_writes=True)
@@ -215,6 +304,8 @@ async def run_program(dut):
 
     cocotb.start_soon(imem.run_mem())
     cocotb.start_soon(dmem.run_mem())
+    seed = hash(PROGRAM_PATH) & 0xFFFFFFFF
+    cocotb.start_soon(irq_driver(dut, seed))
 
     # Extra cycles for MUL/DIV (multi-cycle ops) + trap round-trips
     max_cycles = len(full_program) * 80 + 5000

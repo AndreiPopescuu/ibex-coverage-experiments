@@ -42,7 +42,15 @@ module cocotb_ibex(
   output logic [3:0]                   data_be_o,
   output logic [31:0]                  data_addr_o,
   output logic [31:0]                  data_wdata_o,
-  input  logic [31:0]                  data_rdata_i
+  input  logic [31:0]                  data_rdata_i,
+
+  // Interrupt interface (driven from cocotb for coverage)
+  input  logic                         irq_software_i,
+  input  logic                         irq_timer_i,
+  input  logic                         irq_external_i,
+  input  logic [14:0]                  irq_fast_i,
+  input  logic                         irq_nm_i,
+  input  logic                         debug_req_i
 );
   parameter bit                 SecureIbex               = 1'b1;
   parameter bit                 ICacheScramble           = 1'b1;
@@ -140,18 +148,18 @@ module cocotb_ibex(
     .data_rdata_intg_i      (data_rdata_ecc[38:32]),
     .data_err_i             (1'b0),
 
-    .irq_software_i         (1'b0),
-    .irq_timer_i            (1'b0),
-    .irq_external_i         (1'b0),
-    .irq_fast_i             (15'b0),
-    .irq_nm_i               (1'b0),
+    .irq_software_i         (irq_software_i),
+    .irq_timer_i            (irq_timer_i),
+    .irq_external_i         (irq_external_i),
+    .irq_fast_i             (irq_fast_i),
+    .irq_nm_i               (irq_nm_i),
 
     .scramble_key_valid_i   ('0),
     .scramble_key_i         ('0),
     .scramble_nonce_i       ('0),
     .scramble_req_o         (),
 
-    .debug_req_i            ('b0),
+    .debug_req_i            (debug_req_i),
     .crash_dump_o           (),
     .double_fault_seen_o    (),
 
