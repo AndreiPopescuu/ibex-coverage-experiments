@@ -65,16 +65,12 @@ DEAD_SIGNALS = {
     "hart_id_i":               "tb ties hart_id_i = 32'b0",
     "instr_err_i":             "tb ties instr_err_i = 1'b0",
     "data_err_i":              "tb ties data_err_i = 1'b0",
-    "irq_software_i":         "tb ties irq_software_i = 1'b0",
-    "irq_timer_i":             "tb ties irq_timer_i = 1'b0",
-    "irq_external_i":         "tb ties irq_external_i = 1'b0",
-    "irq_fast_i":              "tb ties irq_fast_i = 15'b0",
-    "irq_nm_i":                "tb ties irq_nm_i = 1'b0",
+    # irq_software_i, irq_timer_i, irq_external_i, irq_fast_i, irq_nm_i,
+    # debug_req_i -- REMOVED from dead list: now live ports driven by cocotb
+    # irq_driver coroutine (commit 9fc2077).
     "scramble_key_valid_i":   "tb ties scramble_key_valid_i = '0",
     "scramble_key_i":         "tb ties scramble_key_i = '0",
     "scramble_nonce_i":       "tb ties scramble_nonce_i = '0",
-    "debug_req_i":             "tb ties debug_req_i = 'b0 (halt-request debug entry "
-                               "unreachable; ebreak/trigger entry still reachable)",
     "ram_cfg_icache_tag_i":   "tb ties ram_cfg_icache_tag_i = '{default: RamCfgReqZero}",
     "ram_cfg_icache_data_i":  "tb ties ram_cfg_icache_data_i = '{default: RamCfgReqZero}",
     "outputs_mismatch":       "ibex_lockstep.sv:653 -- shadow-vs-main core compare; identical "
@@ -100,8 +96,9 @@ def run_program(words, timeout=300):
                                + ":" + env.get("LD_LIBRARY_PATH", ""))
     env["PYTHONPATH"] = (str(ML4DV) + ":" + site_packages
                           + ":" + env.get("PYTHONPATH", ""))
-    env["MODULE"]     = "test_run_for_l8"
-    env["RL_L8_JSON"] = PROGRAM_JSON
+    env["MODULE"]              = "test_run_for_l8"
+    env["COCOTB_TEST_MODULES"] = "test_run_for_l8"
+    env["RL_L8_JSON"]          = PROGRAM_JSON
     proc = subprocess.run(
         [str(VTOP), f"+verilator+coverage+file+{COVDAT}"],
         cwd=str(ML4DV), env=env,

@@ -60,7 +60,10 @@ _BIT_SUFFIX_RE = re.compile(r"\[\d+\]$")
 # total differs is from a DIFFERENT build (sim_build_max, sim_build_max_
 # upstream, ...) and must be excluded from a union -- their bin namespaces
 # aren't compatible, and mixing them silently produces hit > total.
-REFERENCE_TOTAL = 38696
+# Updated to 93726 after adding live IRQ ports (irq_fast_i, irq_software_i,
+# irq_timer_i, irq_external_i, irq_nm_i, debug_req_i) -- Verilator now
+# instruments the full interrupt-handling logic tree (~55k new bins).
+REFERENCE_TOTAL = 93726
 
 
 def module_of(key: str) -> str | None:
