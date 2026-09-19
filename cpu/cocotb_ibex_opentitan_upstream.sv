@@ -42,15 +42,7 @@ module cocotb_ibex(
   output logic [3:0]                   data_be_o,
   output logic [31:0]                  data_addr_o,
   output logic [31:0]                  data_wdata_o,
-  input  logic [31:0]                  data_rdata_i,
-
-  // Interrupt interface (driven from cocotb for coverage)
-  input  logic                         irq_software_i,
-  input  logic                         irq_timer_i,
-  input  logic                         irq_external_i,
-  input  logic [14:0]                  irq_fast_i,
-  input  logic                         irq_nm_i,
-  input  logic                         debug_req_i
+  input  logic [31:0]                  data_rdata_i
 );
   parameter bit                 SecureIbex               = 1'b1;
   parameter bit                 ICacheScramble           = 1'b1;
@@ -87,6 +79,38 @@ module cocotb_ibex(
     .data_i (data_rdata_i),
     .data_o (data_rdata_ecc)
   );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Internal IRQ generator
+  // A 15-bit maximal-length LFSR (primitive poly x^15+x^14+1, period 32767)
+  // drives all maskable interrupt lines.  A 7-bit phase counter gates each
+  // family into a non-overlapping window within the 128-cycle period so the
+  // CPU sees clean assertion/de-assertion pulses.  irq_nm_i is held at 0 —
+  // NMI re-entry would livelock the minimal trap handler.
+  // ─────────────────────────────────────────────────────────────────────────
+  logic [14:0] irq_lfsr_q;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) irq_lfsr_q <= 15'h5EED;
+    else         irq_lfsr_q <= {irq_lfsr_q[13:0], irq_lfsr_q[14] ^ irq_lfsr_q[13]};
+  end
+
+  logic [6:0] irq_phase_q;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) irq_phase_q <= 0;
+    else         irq_phase_q <= irq_phase_q + 1;
+  end
+
+  // Phase windows within the 128-cycle period (non-overlapping):
+  //   [ 8, 24) → irq_fast_i    all 15 bits from LFSR
+  //   [32, 40) → irq_external_i  LFSR[0]
+  //   [48, 56) → irq_software_i  LFSR[1]
+  //   [64, 72) → irq_timer_i     LFSR[2]
+  //   [100,104)→ debug_req_i     LFSR[3]  (exercises debug-mode paths)
+  wire [14:0] irq_fast_gen  = (irq_phase_q >= 7'd8  && irq_phase_q < 7'd24)  ? irq_lfsr_q     : 15'b0;
+  wire        irq_ext_gen   = (irq_phase_q >= 7'd32  && irq_phase_q < 7'd40)  ? irq_lfsr_q[0] : 1'b0;
+  wire        irq_sw_gen    = (irq_phase_q >= 7'd48  && irq_phase_q < 7'd56)  ? irq_lfsr_q[1] : 1'b0;
+  wire        irq_timer_gen = (irq_phase_q >= 7'd64  && irq_phase_q < 7'd72)  ? irq_lfsr_q[2] : 1'b0;
+  wire        debug_req_gen = (irq_phase_q >= 7'd100 && irq_phase_q < 7'd104) ? irq_lfsr_q[3] : 1'b0;
 
   // See cocotb_ibex_max_upstream.sv for why these tie-offs replace the old
   // single ram_cfg_i.
@@ -148,18 +172,18 @@ module cocotb_ibex(
     .data_rdata_intg_i      (data_rdata_ecc[38:32]),
     .data_err_i             (1'b0),
 
-    .irq_software_i         (irq_software_i),
-    .irq_timer_i            (irq_timer_i),
-    .irq_external_i         (irq_external_i),
-    .irq_fast_i             (irq_fast_i),
-    .irq_nm_i               (irq_nm_i),
+    .irq_software_i         (irq_sw_gen),
+    .irq_timer_i            (irq_timer_gen),
+    .irq_external_i         (irq_ext_gen),
+    .irq_fast_i             (irq_fast_gen),
+    .irq_nm_i               (1'b0),
 
     .scramble_key_valid_i   ('0),
     .scramble_key_i         ('0),
     .scramble_nonce_i       ('0),
     .scramble_req_o         (),
 
-    .debug_req_i            (debug_req_i),
+    .debug_req_i            (debug_req_gen),
     .crash_dump_o           (),
     .double_fault_seen_o    (),
 
