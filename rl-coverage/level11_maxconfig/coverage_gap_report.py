@@ -63,7 +63,9 @@ _BIT_SUFFIX_RE = re.compile(r"\[\d+\]$")
 # Updated to 93726 after adding live IRQ ports (irq_fast_i, irq_software_i,
 # irq_timer_i, irq_external_i, irq_nm_i, debug_req_i) -- Verilator now
 # instruments the full interrupt-handling logic tree (~55k new bins).
-REFERENCE_TOTAL = 93726
+# Updated to 93768 after switching to SV-internal LFSR IRQ generator (commit
+# 00e23ab) -- LFSR adds irq_lfsr_q[14:0] + irq_phase_q[6:0] = 44 new bins.
+REFERENCE_TOTAL = 93768
 
 
 def module_of(key: str) -> str | None:
