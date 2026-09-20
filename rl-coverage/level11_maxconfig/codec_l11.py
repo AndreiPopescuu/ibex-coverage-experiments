@@ -159,6 +159,7 @@ L11_CSRS = L10_CSRS + [
     0x329, 0x32A, 0x32B, 0x32C, 0x32D, 0x32E,            # mhpmevent9..14
     0x7C0,                                                 # cpuctrl: dummy_instr_en (SecureIbex)
     0x7C1,                                                 # secureseed: reseed LFSR dummy_instr
+    0x747,                                                 # mseccfg: rlb/mmwp/mml (Smepmp)
 ]
 N_CSR_BUCKETS = len(L11_CSRS)
 

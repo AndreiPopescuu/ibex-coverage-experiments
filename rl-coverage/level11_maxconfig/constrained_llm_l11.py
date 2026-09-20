@@ -48,6 +48,14 @@ HISTORY
     shift_funnel/shift_amt[5] (FSL/FSR absent from codec); zimm_rs1_type_o
     [31:5] (hardwired 27'b0); imm_u_type_o[11:0], imm_b/j_type_o[0]
     (alignment zeros); illegal_reg_rv32e (RV32E=0 localparam).
+  Pass 5 (ibex_alu 4 streams + ibex_cs_registers 3 streams, baseline 80.14%
+    toggle, 46 seeds): gap report targeted imd_val_d_o[1]/multdiv_operand_lsb
+    /GORC/GREV/XPERM in ibex_alu; mseccfg/pmp_cfg lock-clear/irq_ext in
+    ibex_cs_registers.  mseccfg (0x747) added to L11_CSRS as bucket 70.
+    Dead-signal findings: counter_val_upd_o[32:61] (CounterWidth=32 in 3
+    narrow HPM instances); data_tweak_lw_ic0[0:36] (ICacheTweakInfection=0);
+    mcounteren_writable_i[1,3] (IbexMuBiOn=4'b0101 → those bits hardwired 0);
+    csr_restore_dret_i (DRET not in codec); csr_mcause_i.irq_int (MemECC=0).
 
 FIX METHODOLOGY APPLIED (see individual docstrings for per-function detail):
   - "CSRRW/CSRRS/CSRRC with an unconstrained register never guarantees the
@@ -375,12 +383,12 @@ def build_pmp_all_stream(rng):
 def build_csr_full_sweep_stream(rng):
     """Target ibex_cs_registers.sv: the large always_comb CSR read mux.
 
-    Doing a deterministic round-robin read (CSRRS rd, csr, x0) over all 70
+    Doing a deterministic round-robin read (CSRRS rd, csr, x0) over all 71
     buckets ensures every case arm fires at least once. Alternates pure reads
     with read+writes to toggle both the read-mux output and the write path.
     """
     stream = []
-    for bucket in range(70):
+    for bucket in range(71):
         if bucket % 3 == 0:
             stream.append((28, rng.randint(1, 31), 0, 0, 2, bucket))
         elif bucket % 3 == 1:
@@ -2438,6 +2446,647 @@ def build_decoder_imm_upper_bits_sweep_stream(rng):
 
 
 # ---------------------------------------------------------------------------
+# ibex_alu.sv — Pass 5: imd_val_d_o[1], multdiv_operand lsb, GORC/GREV/XPERM
+# ---------------------------------------------------------------------------
+
+def build_alu_imd_val_d1_bcompress_msb_stream(rng):
+    """Target ibex_alu.sv: imd_val_d_o[1][30:0] both transitions via BCOMPRESS/BDECOMPRESS.
+
+    RTL ANALYSIS (ibex_alu.sv, gen_alu_rvb_full block):
+      imd_val_d_o[1] is ONLY written with imd_val_we_o[1]=1 in the
+      ALU_BCOMPRESS / ALU_BDECOMPRESS case arm (lines 1264-1279):
+        imd_val_d_o = '{bitcnt_partial_lsb_d, bitcnt_partial_msb_d};
+        if (instr_first_cycle_i) imd_val_we_o = 2'b11;
+      All other multicycle ops (CMOV/CMIX/ROL/ROR/CRC32) write
+        imd_val_d_o = '{..., 32'h0}  — imd_val_d_o[1] stays 0.
+      Any other single-cycle op writes imd_val_d_o = '{operand_a_i, 32'h0},
+        again imd_val_d_o[1] = 32'h0.
+
+      bitcnt_partial_msb_d assignment (lines 1058-1075):
+        bits[0:15]  = bitcnt_partial[2*i+1][1]   for i in 0..15
+                    = bit[1] of the 2-element prefix sum for pair (2i, 2i+1)
+                      of operand_b_i — SET iff bits[2i+1:2i] of mask has
+                      both bits set (i.e. operand_b_i[2i+1:2i] == 2'b11).
+        bits[16:23] = bitcnt_partial[4*i+3][2]   for i in 0..7
+                    = bit[2] of the 4-element prefix sum — SET iff >= 4 of
+                      the 4 bits in operand_b_i[4i+3:4i] are set.
+        bits[24:27] = bitcnt_partial[8*i+7][3]   for i in 0..3
+                    = bit[3] of the 8-element prefix sum — SET iff >= 8 of
+                      8 bits in operand_b_i[8i+7:8i] are set (i.e. all 8).
+        bits[28:29] = bitcnt_partial[16*i+15][4] for i in 0..1
+                    = bit[4] of the 16-element prefix sum — SET iff >= 16
+                      bits set in the corresponding 16-bit half.
+        bit[30]     = bitcnt_partial[31][5]
+                    = bit[5] of the 32-element prefix sum = popcount bit[5]
+                      of operand_b_i — SET iff >= 32 bits set (all 1's mask).
+        bit[31]     = 1'b0 HARDWIRED (line 1075): STRUCTURALLY UNREACHABLE.
+                      imd_val_d_o[1][31]:0->1 cannot ever be asserted.
+
+    Strategy: use operand_b_i (the deposit/extract mask for BCOMPRESS/BDECOMPRESS)
+    patterns that maximise the number of bits set in bitcnt_partial_msb_d, and
+    then alternate with sparse masks (few set bits) to get the 1->0 transitions.
+    Key masks:
+      - 0xFFFFFFFF (all 1s): sets bit[30] (popcount=32 >= 32), bits[28:29]
+        (each 16-bit half has 16 set bits), bits[24:27] (each octet has 8
+        set bits), bits[16:23] (each nibble has 4 set bits), bits[0:15]
+        (every pair has both bits set). This drives imd_val_d_o[1][30:0]
+        to near-all-ones (bit[31] stays 0).
+      - 0x55555555 (alternating 01 nibbles): no adjacent pair is both-set,
+        so bits[0:15] all become 0; higher-count thresholds also unmet.
+        Drives imd_val_d_o[1] to 0.
+      - 0xCCCCCCCC (every pair = 11 in position 1, 0 in position 0):
+        bits[0:15] = 1 (the upper bit of each pair IS set but the 2-count
+        threshold needs both bits — bitcnt_partial[1][1] = (b[1]+b[0])[1]
+        which is 1 iff b[0]+b[1] >= 2, i.e. both set). So 0xCCCC is
+        pairs 10, giving count=1, bit[1]=0. Better: 0xFFFF00FF — see below.
+      - 0xFFFF0000: 16 set bits in upper half, 0 in lower.
+        bits[28]=bitcnt_partial[15][4]=bit4 of lower 16 prefix sum = 0.
+        bits[29]=bitcnt_partial[31][4]=bit4 of upper 16 prefix sum =
+          bitcnt_partial[31] = 16 = 0b10000, bit4=1.  So bit[29]=1, bit[28]=0.
+
+    The stream alternates dense masks (set bits) and sparse masks (unset bits)
+    to generate both 0->1 and 1->0 transitions on imd_val_d_o[1].
+    Precede each BCOMPRESS/BDECOMPRESS with ADDI/ORI/XOR to load specific
+    mask values into registers.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; _XOR = 5; _AND = 6; _OR = 8
+    BCOMPRESS = 128; BDECOMPRESS = 129
+
+    # Register allocation: use fixed registers to carry known mask values
+    # across iterations.  Reload fresh each time so the simulator has stable
+    # inputs regardless of hazard stalls.
+
+    # Dense masks that produce a variety of imd_val_d_o[1] patterns
+    # (achieved by ADDI + ORI with available buckets):
+    #   imm_bucket=4 → +2047 = 0x000007FF  (bits[10:0] set)
+    #   imm_bucket=0 → -2048 = 0xFFFFF800  (bits[31:11] set)
+    #   XOR of both  → 0xFFFFFFFF           (all bits set)
+    #   ORI(2047)  with rs1 loaded to 0xFFFFF800 → 0xFFFFFFFF
+    #   imm_bucket=1 → -100 = 0xFFFFFF9C   (bits[31:0] mostly set)
+
+    for _ in range(10):
+        r_dense = rng.randint(1, 15)
+        r_sparse = rng.randint(16, 31)
+        r_data = rng.randint(1, 31)
+        r_out = rng.randint(1, 31)
+
+        # Load dense mask 0xFFFFFFFF: ADDI rd,-2048 then ORI rd,rd,2047
+        stream.append((ADDI, r_dense, 0, 0, 0, 0))    # r_dense = 0xFFFFF800
+        stream.append((ORI,  r_dense, r_dense, 0, 4, 0))  # r_dense |= 0x7FF -> 0xFFFFFFFF
+
+        # Load sparse mask 0x00000000: ADDI rd,0,0
+        stream.append((ADDI, r_sparse, 0, 0, 2, 0))   # r_sparse = 0
+
+        # Load a varied data value
+        stream.append((ADDI, r_data, 0, 0, rng.randint(0, 4), 0))
+        stream.append((ORI,  r_data, r_data, 0, rng.randint(0, 4), 0))
+
+        # BCOMPRESS with dense mask -> imd_val_d_o[1] has many bits set (0->1)
+        stream.append((BCOMPRESS,   r_out, r_data, r_dense, 0, 0))
+        # BDECOMPRESS with dense mask -> also writes imd_val_d_o[1] non-zero
+        stream.append((BDECOMPRESS, r_out, r_data, r_dense, 0, 0))
+
+        # BCOMPRESS with sparse (0) mask -> imd_val_d_o[1] = 0 (1->0 transition
+        # from the non-zero value just written)
+        stream.append((BCOMPRESS,   r_out, r_data, r_sparse, 0, 0))
+        stream.append((BDECOMPRESS, r_out, r_data, r_sparse, 0, 0))
+
+    # Also sweep partial masks to exercise individual bits of
+    # bitcnt_partial_msb_d:
+    #   bit[29]=1 iff upper 16 bits of mask have >=16 set bits
+    #   -> mask = 0xFFFF0000: ORI+ADDI
+    #   bit[30]=1 iff all 32 bits set -> mask = 0xFFFFFFFF (covered above)
+    for _ in range(5):
+        r_half = rng.randint(1, 15)
+        r_data2 = rng.randint(1, 31)
+        r_out2  = rng.randint(1, 31)
+
+        # mask = 0xFFFF0000: load -2048 (0xFFFFF800) then AND with 0xFFFF0000
+        # Not directly available — use the complement: ORI on a shifted value.
+        # Simplest with available buckets:
+        #   ADDI rd, 0, -2048  → 0xFFFFF800
+        #   ADDI r2, 0, 0      → 0x00000000
+        #   ORI  r2, r2, 2047  → 0x000007FF  <- NOT what we want
+        # Workaround: use 0xFFFFF800 (bits[31:11] set) as the mask itself.
+        # bitcnt_partial_msb_d with this mask:
+        #   21 bits set (bits 31..11), each of the 16 pairs overlapping
+        #   bits 11..31 will have bitcnt>=1 or 2 depending on overlap.
+        #   pairs at positions (10,11),(12,13)...(30,31) each have 2 set
+        #   bits (count=2, bit[1]=1) → bitcnt_partial_msb_d[5..15] = 1.
+        #   Pair (8,9): bit9=0, bit8=0 → 0. pair (10,11): bit11=1, bit10=0→1.
+        #   Actually (mask>>11)&3==3 only for positions 11 upwards.
+        #   This still exercises bits[5..15] of imd_val_d_o[1].
+        stream.append((ADDI, r_half, 0, 0, 0, 0))    # r_half = 0xFFFFF800
+        stream.append((ADDI, r_data2, 0, 0, rng.randint(1, 4), 0))
+        stream.append((BCOMPRESS,   r_out2, r_data2, r_half, 0, 0))
+        stream.append((BDECOMPRESS, r_out2, r_data2, r_half, 0, 0))
+        # Sparse follow to get 1->0
+        stream.append((ADDI, r_half, 0, 0, 2, 0))    # r_half = 0
+        stream.append((BCOMPRESS,   r_out2, r_data2, r_half, 0, 0))
+
+    return stream
+
+
+def build_alu_imd_val_d1_dense_mask_stream(rng):
+    """Target ibex_alu.sv: imd_val_d_o[1][0:15] and imd_val_d_o[1][16:30] via varied masks.
+
+    RTL ANALYSIS (ibex_alu.sv, gen_alu_rvb_full, lines 1058-1075):
+      imd_val_d_o[1] = bitcnt_partial_msb_d (written on BCOMPRESS/BDECOMPRESS cycle 1).
+
+      bitcnt_partial_msb_d bits breakdown:
+        bits[0:15]  = bitcnt_partial[2*i+1][1], i=0..15.
+          bitcnt_partial[2i+1][1] is bit[1] of the 2-element prefix-sum
+          at position 2i+1. The first stage of the Brent-Kung adder
+          (lines 510-512) computes bitcnt_partial[2i+1] = {5'b0,bits[2i+1]}
+          + {5'b0,bits[2i]} (a 2-bit count). Bit[1] of this = 1 iff
+          BOTH bits[2i] AND bits[2i+1] of operand_b_i are set.
+          So bitcnt_partial_msb_d[i] = operand_b_i[2i] & operand_b_i[2i+1].
+          To get bit i of imd_val_d_o[1] to toggle: need a mask where
+          pair (2i, 2i+1) goes from both-set (→ bit=1) to not-both-set (→ bit=0).
+
+        bits[16:23] = bitcnt_partial[4*i+3][2], i=0..7.
+          = bit[2] of the 4-element prefix sum at position 4i+3.
+          After stage 1 and 2 of Brent-Kung, bitcnt_partial[4i+3][2] is 1
+          iff at least 4 of the 4 bits in operand_b_i[4i+3:4i] are set,
+          i.e. all 4 bits set. Otherwise 0.
+          (A 2-bit Brent-Kung sum bit[2] == 1 iff sum >= 4.)
+          So bitcnt_partial_msb_d[16+i] = AND of operand_b_i[4i+3:4i].
+          Toggle: mask with all-4-set nibble (bits 4i+3:4i = 1111) vs one unset.
+
+        bits[24:27] = bitcnt_partial[8*i+7][3], i=0..3.
+          = bit[3] of 8-element prefix sum — SET iff all 8 bits set in octet.
+
+        bits[28:29] = bitcnt_partial[16*i+15][4], i=0..1.
+          = bit[4] of 16-element prefix sum — SET iff all 16 bits set in half.
+
+        bit[30] = bitcnt_partial[31][5] = popcount[5] of full 32-bit operand_b_i
+          = SET iff all 32 bits set (popcount == 32 or >= 32). Since operand_b_i
+          is 32 bits, max popcount = 32 = 0b100000; bit[5] = 1 iff popcount == 32,
+          i.e. operand_b_i = 0xFFFFFFFF.
+
+        bit[31] = 1'b0 ALWAYS (line 1075). STRUCTURALLY UNREACHABLE.
+
+    Strategy:
+      Dense masks (all bits set in relevant segment) → 0->1 transitions.
+      Sparse masks (at most one bit per relevant pair/nibble) → 1->0 transitions.
+
+    Mask patterns used:
+      0xFFFFFFFF (bucket combination -2048 OR 2047): all 32 bits set.
+        → imd_val_d_o[1] = 0x7FFFFFFF (all bits[30:0] = 1, bit[31]=0).
+      0x55555555 (alternating 01 pairs): no pair is both-set.
+        → imd_val_d_o[1][0:15] = 0, and all higher bits also 0.
+        But 0x55555555 is not directly encodable; approximate with 0 mask.
+      0x00000000 (zero mask): imd_val_d_o[1] = 0.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; _AND = 6; _OR = 8; _XOR = 5
+    BCOMPRESS = 128; BDECOMPRESS = 129
+
+    for _ in range(12):
+        r_mask_full = rng.randint(1, 10)
+        r_mask_zero = rng.randint(11, 20)
+        r_mask_pair = rng.randint(21, 31)
+        r_data      = rng.randint(1, 31)
+        r_out       = rng.randint(1, 31)
+
+        # Full mask: 0xFFFFFFFF
+        stream.append((ADDI, r_mask_full, 0, 0, 0, 0))   # 0xFFFFF800
+        stream.append((ORI,  r_mask_full, r_mask_full, 0, 4, 0))  # 0xFFFFFFFF
+
+        # Zero mask
+        stream.append((ADDI, r_mask_zero, 0, 0, 2, 0))   # 0x00000000
+
+        # Varied data
+        stream.append((ADDI, r_data, 0, 0, rng.randint(0, 4), 0))
+        stream.append((_XOR, r_data, r_data, r_mask_full, 0, 0))  # varied pattern
+
+        # BCOMPRESS full mask → imd_val_d_o[1] = 0x7FFFFFFF (0->1 for bits 30:0)
+        stream.append((BCOMPRESS,   r_out, r_data, r_mask_full, 0, 0))
+        stream.append((BDECOMPRESS, r_out, r_data, r_mask_full, 0, 0))
+
+        # BCOMPRESS zero mask → imd_val_d_o[1] = 0 (1->0 transitions)
+        stream.append((BCOMPRESS,   r_out, r_data, r_mask_zero, 0, 0))
+        stream.append((BDECOMPRESS, r_out, r_data, r_mask_zero, 0, 0))
+
+        # Pair-wise mask 0xCCCCCCCC (pairs = 11 at bit positions 3:2, 7:6, etc.)
+        # bitcnt_partial_msb_d[1]=bitcnt_partial[3][1]: pair(2,3) = both bits set=1.
+        # bitcnt_partial_msb_d[0]=bitcnt_partial[1][1]: pair(0,1) = bits 0,1 = 00 → 0.
+        # This exercises specific intermediate bits.
+        stream.append((ADDI, r_mask_pair, 0, 0, 1, 0))   # -100 = 0xFFFFFF9C
+        stream.append((BCOMPRESS,   r_out, r_data, r_mask_pair, 0, 0))
+        stream.append((BDECOMPRESS, r_out, r_data, r_mask_pair, 0, 0))
+        stream.append((BCOMPRESS,   r_out, r_data, r_mask_zero, 0, 0))
+
+    return stream
+
+
+def build_alu_multdiv_operand_lsb_stream(rng):
+    """Target ibex_alu.sv: multdiv_operand_a_i[0] and multdiv_operand_b_i[0].
+
+    RTL ANALYSIS:
+      ibex_alu.sv ports (lines 18-19):
+        input logic [32:0] multdiv_operand_a_i,
+        input logic [32:0] multdiv_operand_b_i,
+      These are driven by ibex_multdiv_fast.sv: alu_operand_a_o, alu_operand_b_o.
+
+      ibex_multdiv_fast.sv (lines 412-504), ALL assignments of alu_operand_a_o
+      and alu_operand_b_o end with the bit pattern {value, 1'b1} — the LSB
+      (bit[0]) is ALWAYS hardwired 1'b1 in the multdiv unit. This is by design:
+      the 33-bit operands use bit[0] as a carry-in for two's-complement negation
+      in the ALU adder (the adder computes in_a + in_b, where in_b = ~op + 1).
+      Specifically (ibex_multdiv_fast.sv):
+        Default:    alu_operand_a_o = {32'h0, 1'b1}
+        MD_ABS_A:   alu_operand_a_o = {32'h0, 1'b1}
+        MD_ABS_B:   alu_operand_a_o = {32'h0, 1'b1}
+        MD_COMP:    alu_operand_a_o = {imd_val_q_i[0][31:0], 1'b1}
+        MD_LAST:    alu_operand_a_o = {imd_val_q_i[0][31:0], 1'b1}
+        MD_CHANGE_SIGN: alu_operand_a_o = {32'h0, 1'b1}
+        All alu_operand_b_o assignments: {~..., 1'b1}
+
+    CONCLUSION: multdiv_operand_a_i[0]:1->0 and multdiv_operand_b_i[0]:1->0
+    are STRUCTURALLY UNREACHABLE. The multdiv unit NEVER drives bit[0]=0.
+    The 1->0 transitions cannot occur regardless of what instructions are
+    executed — the ibex_multdiv_fast.sv always outputs bit[0]=1 on every
+    cycle it is active, and when multdiv_sel_i=0 the ALU ignores these inputs
+    entirely (they are not sampled by the adder).
+
+    This stream is provided as documentation of the finding. It exercises
+    MUL/DIV operations with varied operand values to achieve maximum COVERAGE
+    of the reachable toggle bins (0->1 direction, which IS already covered
+    per the gap report) and of ibex_multdiv_fast internal signals, and to
+    confirm that the 1->0 direction bins remain at zero regardless.
+
+    To maximise coverage of multdiv_operand_a_i / multdiv_operand_b_i upper
+    bits (bits[32:1]) which are driven by the actual computation results from
+    ibex_multdiv_fast:
+      - DIV/REM with signed mixed-sign operands (many upper bits toggling via
+        the absolute-value and remainder accumulation in MD_COMP cycles).
+      - MUL/MULH with varied high bits in both operands.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; _XOR = 5; _OR = 8
+    MUL = 30; MULH = 31; MULHSU = 32; MULHU = 33
+    DIV = 34; DIVU = 35; REM = 36; REMU = 37
+
+    # Load registers with values that have varied bit patterns including odd/even
+    neg_regs = [rng.randint(1, 8)  for _ in range(4)]
+    pos_regs = [rng.randint(9, 20) for _ in range(4)]
+    for r in neg_regs:
+        stream.append((ADDI, r, 0, 0, 0, 0))   # -2048: bit31=1, bit0=0 → odd abs
+    for r in pos_regs:
+        stream.append((ADDI, r, 0, 0, 4, 0))   # +2047: bit31=0, bit0=1 → odd
+    # Also load ODD and EVEN variants via ORI:
+    # 2047 = 0x7FF, -2048 = 0xFFFFF800: both are even in absolute value at lsb
+    # ORI r, r, 1 not directly available. Use imm_bucket=3 (+100) for small odd.
+    # -100 = 0xFFFFFF9C: bits[31:0] = 0xFFFFFF9C, bit0=0 (even)
+    # +100 = 0x64: bit0=0 (even)
+
+    # Perform MUL ops with varied sign combinations
+    for nr in neg_regs:
+        for pr in pos_regs:
+            stream.append((MUL, rng.randint(1, 31), nr, pr, 2, 0))
+            stream.append((MULH, rng.randint(1, 31), nr, pr, 2, 0))
+    for nr1, nr2 in zip(neg_regs[:2], neg_regs[2:]):
+        stream.append((MULHSU, rng.randint(1, 31), nr1, nr2, 2, 0))
+        stream.append((MULHU,  rng.randint(1, 31), nr1, nr2, 2, 0))
+
+    # DIV/REM with mixed-sign operands (exercises MD_COMP accumulation where
+    # multdiv_operand_a_i[32:1] toggles via remainder bits)
+    for nr in neg_regs:
+        for pr in pos_regs:
+            stream.append((DIV,  rng.randint(1, 31), nr, pr, 2, 0))
+            stream.append((REM,  rng.randint(1, 31), nr, pr, 2, 0))
+            stream.append((DIV,  rng.randint(1, 31), pr, nr, 2, 0))
+    for pr1, pr2 in zip(pos_regs[:2], pos_regs[2:]):
+        stream.append((DIVU, rng.randint(1, 31), pr1, pr2, 2, 0))
+        stream.append((REMU, rng.randint(1, 31), pr1, pr2, 2, 0))
+
+    return stream
+
+
+def build_alu_gorc_grev_xperm_stream(rng):
+    """Target ibex_alu.sv: rev_result (GORC/GREV), shuffle_result (SHFL/UNSHFL),
+    xperm_result (XPERM_N/XPERM_B/XPERM_H) internals with varied shift amounts.
+
+    RTL ANALYSIS (ibex_alu.sv, gen_alu_rvb_otearlgrey_full block):
+
+    GORC / GREV (lines 599-642, general reverse and or-combine):
+      zbp_shift_amt[2:0] = shift_amt[2:0] (RV32BFull: full shift amount used)
+      zbp_shift_amt[4:3] = shift_amt[4:3]
+      gorc_op = (operator_i == ALU_GORC)
+      The rev_result computation has 5 if-guarded stages, each gated by a
+      different bit of zbp_shift_amt[4:0]. Stage i fires iff zbp_shift_amt[i]=1.
+      To exercise all 5 stages independently and in combination:
+        - shift_amt with bits [4:0] = 5'b00001 → only stage 0 fires
+        - shift_amt with bits [4:0] = 5'b00010 → only stage 1 fires
+        - shift_amt with bits [4:0] = 5'b00100 → only stage 2 fires
+        - shift_amt with bits [4:0] = 5'b01000 → only stage 3 fires
+        - shift_amt with bits [4:0] = 5'b10000 → only stage 4 fires
+        - shift_amt with bits [4:0] = 5'b11111 → all stages fire
+      shift_amt[4:0] is taken from operand_b_i[4:0] (the rs2 register value).
+      To guarantee exact shift amounts, load rs2 via ADDI with known immediates
+      and then use as the shift-amount register.
+      Available immediates: 0 (bucket2), 100=0x64 (bucket3), 2047=0x7FF (bucket4),
+        -2048=0xFFFFF800 (bucket0), -100=0xFFFFFF9C (bucket1).
+      operand_b_i[4:0] from ADDI:
+        bucket3 = +100 = 0x64 → [4:0] = 5'b00100 (shift_amt bit[2]=1 only)
+        bucket4 = +2047 = 0x7FF → [4:0] = 5'b11111 (all 5 bits set)
+        bucket2 = 0 → [4:0] = 5'b00000 (no stage fires — identity)
+      For single-bit shift amounts not directly encodable from fixed immediates,
+      use the rs2 register loaded by the previous MUL/ADD result. The stream
+      uses all 5 available imm_bucket values as the shift-amount source.
+      Additionally use XOR of loaded values to get combinations like 0b00011,
+      0b01010, etc.
+
+    SHFL / UNSHFL (lines 650-730, shuffle/unshuffle):
+      shuffle_mode derived from shift_amt[3:0] (or reversed for UNSHFL).
+      Each bit of shuffle_mode[3:0] gates one of 4 shuffle stages.
+      operand_b_i[3:0] = shift_amt[3:0] for SHFL.
+      Use same strategy: rs2 = ADDI result with buckets giving [3:0] = 0001,
+      0010, 0100, 1000, 1111 to exercise individual and combined stages.
+
+    XPERM_N / XPERM_B / XPERM_H (lines 737-820, crossbar permutation):
+      For XPERM_N: each nibble of output is selected from one of 8 nibbles of
+      operand_a_i based on the 3-bit selector in the corresponding nibble of
+      operand_b_i. Valid iff bit[3] of that nibble = 0.
+      To generate varied xperm_result bits: load operand_a_i with a pattern
+      where different nibble values are distinct (e.g. 0x01234567, 0x89ABCDEF),
+      and operand_b_i with a permutation selector.
+      Note: 0x01234567 not directly loadable; use ADDI+ORI chains to build
+      varied but non-zero register values.
+
+    Carry-less multiply (CLMUL/CLMULR/CLMULH, lines 883-985):
+      clmul_result_raw = XOR-tree of (clmul_op_b[i] ? clmul_op_a << i : 0).
+      To exercise all bits of the XOR tree: operand_a_i and operand_b_i should
+      both have many set bits to produce carries/XOR interactions throughout
+      the 32-bit result.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; _XOR = 5; _OR = 8; _AND = 6
+    GREV = 118; GORC = 119
+    SHFL = 120; UNSHFL = 121
+    XPERM_N = 122; XPERM_B = 123; XPERM_H = 124
+    CLMUL = 125; CLMULR = 126; CLMULH = 127
+
+    # GORC and GREV with varied shift amounts exercising all 5 zbp stages
+    for _ in range(6):
+        r_a = rng.randint(1, 15)
+        r_b = rng.randint(16, 31)
+        r_out = rng.randint(1, 31)
+
+        # Load operand_a with a dense value
+        stream.append((ADDI, r_a, 0, 0, rng.randint(0, 4), 0))
+        stream.append((ORI,  r_a, r_a, 0, rng.randint(0, 4), 0))
+
+        # shift_amt = operand_b_i[4:0]
+        # Sweep imm_buckets for operand_b:
+        #   bucket2 = 0         → zbp_shift_amt = 0, identity (all stages skip)
+        #   bucket3 = 100=0x64  → [4:0]=0b00100, only stage 2 fires
+        #   bucket4 = 2047=0x7FF→ [4:0]=0b11111, all stages fire
+        #   bucket0 = -2048     → [4:0]=0b00000 (bits[4:0] of 0xFFFFF800 = 0)
+        #   bucket1 = -100=0x9C → [4:0]=0b11100, stages 2,3,4 fire
+        for ib in range(5):
+            stream.append((ADDI, r_b, 0, 0, ib, 0))
+            stream.append((GORC, r_out, r_a, r_b, 2, 0))
+            stream.append((GREV, r_out, r_a, r_b, 2, 0))
+
+    # SHFL / UNSHFL with varied shuffle_mode bits
+    for _ in range(5):
+        r_a = rng.randint(1, 15)
+        r_b = rng.randint(16, 31)
+        r_out = rng.randint(1, 31)
+
+        stream.append((ADDI, r_a, 0, 0, rng.randint(0, 4), 0))
+        stream.append((ORI,  r_a, r_a, 0, 4, 0))   # dense value
+
+        for ib in range(5):
+            stream.append((ADDI, r_b, 0, 0, ib, 0))
+            stream.append((SHFL,   r_out, r_a, r_b, 2, 0))
+            stream.append((UNSHFL, r_out, r_a, r_b, 2, 0))
+
+    # XPERM with various operand combinations
+    # For XPERM_N: operand_b nibbles are 3-bit selectors + valid bit.
+    # A safe permutation: 0x76543210 (identity permutation; each nibble i
+    # selects nibble i of operand_a). Not directly loadable, but varied
+    # values will exercise different crossbar paths.
+    for _ in range(5):
+        r_a = rng.randint(1, 15)
+        r_b = rng.randint(16, 31)
+        r_out = rng.randint(1, 31)
+
+        stream.append((ADDI, r_a, 0, 0, rng.randint(1, 4), 0))
+        stream.append((ORI,  r_a, r_a, 0, rng.randint(0, 3), 0))
+        stream.append((ADDI, r_b, 0, 0, rng.randint(0, 4), 0))
+
+        stream.append((XPERM_N, r_out, r_a, r_b, 2, 0))
+        stream.append((XPERM_B, r_out, r_a, r_b, 2, 0))
+        stream.append((XPERM_H, r_out, r_a, r_b, 2, 0))
+
+    # CLMUL with varied inputs (exercises clmul_and_stage / xor tree bits)
+    for _ in range(6):
+        r_a = rng.randint(1, 15)
+        r_b = rng.randint(16, 31)
+        r_out = rng.randint(1, 31)
+
+        stream.append((ADDI, r_a, 0, 0, rng.randint(0, 4), 0))
+        stream.append((ORI,  r_a, r_a, 0, rng.randint(0, 4), 0))
+        stream.append((ADDI, r_b, 0, 0, rng.randint(0, 4), 0))
+        stream.append((ORI,  r_b, r_b, 0, rng.randint(0, 4), 0))
+
+        stream.append((CLMUL,  r_out, r_a, r_b, 2, 0))
+        stream.append((CLMULR, r_out, r_a, r_b, 2, 0))
+        stream.append((CLMULH, r_out, r_a, r_b, 2, 0))
+
+    return stream
+
+
+# ---------------------------------------------------------------------------
+# ibex_cs_registers.sv — Pass 5: mseccfg toggle, PMP lock clear via RLB,
+#   irq_ext / lower_cause[4] via interrupt enables
+# ---------------------------------------------------------------------------
+
+def build_mseccfg_toggle_stream(rng):
+    """Target ibex_cs_registers.sv: pmp_mseccfg_q.{rlb,mmwp,mml}, pmp_mseccfg_we/err.
+
+    RTL: ibex_cs_registers.sv g_pmp_registers block.
+      pmp_mseccfg is written when csr_addr_i==CSR_MSECCFG (0x747) and csr_we_i.
+      pmp_mseccfg_we toggles on every write; pmp_mseccfg_err fires on security
+      violations (e.g. MML-mode write conflicts).
+      Bits: [0]=rlb (Rule Locking Bypass), [1]=mmwp (Machine Mode Whitelist
+      Policy), [2]=mml (Machine Mode Lockdown).
+      NB: per Smepmp spec MML and MMWP are one-way sticky once set; 1->0
+      transitions on those bits may be structurally unreachable after first set.
+      RLB is freely clearable. We cover 0->1 on all three and attempt 1->0 by
+      writing 0 before any sticky bit is set.
+
+    CSRRWI with uimm=0 writes 0 to the CSR (ibex_decoder.sv: CSRRWI is always
+    CSR_OP_WRITE, unlike CSRRSI/CSRRCI which become READ when uimm==0).
+    """
+    stream = []
+    CSRRWI = 66; CSRRSI = 67; CSRRCI = 68; CSRRW = 27
+    MSECCFG = 70  # bucket 70 = 0x747
+
+    for _ in range(15):
+        r = rng.randint(1, 31)
+        r2 = rng.randint(1, 15)
+
+        # Write 0 — attempt to clear all bits (covers 1->0 on rlb; mml/mmwp sticky)
+        stream.append((CSRRWI, r, 0, 0, 0, MSECCFG))   # uimm=0 → write 0
+
+        # Set rlb (bit 0) — cover rlb:0->1
+        stream.append((CSRRSI, r, 1, 0, 0, MSECCFG))   # set bit 0
+
+        # Clear rlb — cover rlb:1->0 (rlb is not sticky)
+        stream.append((CSRRCI, r, 1, 0, 0, MSECCFG))   # clear bit 0
+
+        # Set mmwp (bit 1) — cover mmwp:0->1
+        stream.append((CSRRSI, r, 2, 0, 0, MSECCFG))   # set bit 1
+
+        # Write 0 again — attempt mmwp:1->0 (sticky → may stay 1, still hits we)
+        stream.append((CSRRWI, r, 0, 0, 0, MSECCFG))
+
+        # Set mml (bit 2) — cover mml:0->1
+        stream.append((CSRRSI, r, 4, 0, 0, MSECCFG))   # set bit 2
+
+        # Write 7 (all bits) via CSRRWI to ensure all paths in the write mux hit
+        stream.append((CSRRWI, r, 7, 0, 0, MSECCFG))   # uimm=7
+
+        # Try clearing via CSRRCI — potential pmp_mseccfg_err if locked entries exist
+        stream.append((CSRRCI, r, 6, 0, 0, MSECCFG))   # clear bits 1,2
+        stream.append((CSRRCI, r, 1, 0, 0, MSECCFG))   # clear bit 0
+
+        # Read back with CSRRW (always writes pmp_mseccfg_we) using varying rs1
+        stream.append((CSRRW, r2, r, 0, 0, MSECCFG))
+
+    return stream
+
+
+def build_pmp_cfg_lock_rlb_clear_stream(rng):
+    """Target ibex_cs_registers.sv: pmp_cfg[N].lock:1->0 via RLB.
+
+    RTL: ibex_pmp.sv — pmpcfg writes are gated:
+        if (!pmp_cfg_locked_i[i] || pmp_mseccfg_i.rlb)
+    When rlb=1, even locked entries can be overwritten (lock cleared).
+
+    Strategy:
+      1. Clear rlb so initial lock-set writes are definitely applied.
+      2. Load 0xFFFFFF9C (-100 signed) into r1: bits[7:0]=0x9C=1001_1100
+         → bit7=lock=1, bits[4:3]=11=NAPOT, bit2=exec=1 — sets lock in all
+         4 pmp entries packed into pmpcfgN (entries 0-3 in pmpcfg0, etc.)
+         and similarly for upper bytes.
+      3. Write to pmpcfg0..3 to lock entries 0-15 (pmp_cfg[N].lock:0->1).
+      4. Enable rlb (CSRRSI mseccfg, 1).
+      5. Write 0 to pmpcfg0..3 — with rlb=1 this clears all bits including
+         lock (pmp_cfg[N].lock:1->0).
+      6. Clear rlb again for next iteration.
+
+    CSRRWI uimm=0 always writes 0 (CSR_OP_WRITE per ibex_decoder.sv).
+    """
+    stream = []
+    ADDI = 10; CSRRW = 27; CSRRWI = 66; CSRRSI = 67; CSRRCI = 68
+    MSECCFG = 70   # bucket 70 = 0x747
+    PMPCFG0 = 33   # 0x3A0
+    PMPCFG1 = 34   # 0x3A1
+    PMPCFG2 = 35   # 0x3A2
+    PMPCFG3 = 36   # 0x3A3
+
+    for _ in range(8):
+        r1 = rng.randint(1, 31)
+        r2 = rng.randint(1, 31)
+
+        # Clear rlb first (start from clean state, rlb=0)
+        stream.append((CSRRCI, r2, 1, 0, 0, MSECCFG))
+
+        # Load lock-setting value: ADDI r1, x0, -100 → r1 = 0xFFFFFF9C
+        # bits[7:0]=0x9C: lock(7)=1, NAPOT(4:3)=11, exec(2)=1 → sets lock=1
+        # (same byte repeats across all 4 entries in each pmpcfgN word)
+        stream.append((ADDI, r1, 0, 0, 1, 0))   # r1 = -100 = 0xFFFFFF9C
+
+        # Set lock in pmpcfg0..3 (entries 0-15): pmp_cfg[N].lock:0->1
+        stream.append((CSRRW, r2, r1, 0, 0, PMPCFG0))
+        stream.append((CSRRW, r2, r1, 0, 0, PMPCFG1))
+        stream.append((CSRRW, r2, r1, 0, 0, PMPCFG2))
+        stream.append((CSRRW, r2, r1, 0, 0, PMPCFG3))
+
+        # Enable RLB (Rule Locking Bypass) — allows clearing locked entries
+        stream.append((CSRRSI, r2, 1, 0, 0, MSECCFG))
+
+        # Clear pmpcfg0..3 with rlb=1 → pmp_cfg[N].lock:1->0 covered
+        stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG0))
+        stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG1))
+        stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG2))
+        stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG3))
+
+        # Clear rlb again (rlb:1->0)
+        stream.append((CSRRCI, r2, 1, 0, 0, MSECCFG))
+
+    return stream
+
+
+def build_irq_enable_mcause_stream(rng):
+    """Target ibex_cs_registers.sv: csr_mcause_i.irq_ext, lower_cause[4].
+
+    These are INPUT signals to ibex_cs_registers driven by ibex_core at trap
+    time (csr_save_cause_i asserted):
+      irq_ext: set when machine external interrupt (MEIP, cause=0xB) fires.
+      lower_cause[4]: set when a fast interrupt fires (cause ≥ 16 = 0x10,
+        i.e. bit4 of cause code set).
+
+    The testbench LFSR already asserts irq_external_i and irq_fast_i[0..14]
+    periodically. For the core to actually TAKE those interrupts, the
+    instruction stream must enable them:
+      mstatus.MIE (bit 3 = value 0x8): global interrupt enable.
+      mie.MEIE    (bit 11 = value 0x800): machine external interrupt enable.
+      mie.MFIE    (bits 31:16): fast interrupt enable — bit 16 for irq_fast[0].
+
+    Strategy: set mie=all-ones, set mstatus.MIE, run NOPs to give the LFSR
+    time to fire, then MRET to re-enable MIE after the handler returns.
+    For lower_cause[4]:1->0, a subsequent non-fast trap (ECALL, cause=11 or
+    external IRQ with cause != fast) overwrites mcause with bit4=0.
+    """
+    stream = []
+    ADDI = 10; ORI = 14; CSRRW = 27; CSRRSI = 67; CSRRCI = 68
+    ECALL = 62; MRET = 70
+    MSTATUS = 29   # bucket 29 = 0x300
+    MIE_B    = 30  # bucket 30 = 0x304
+
+    for _ in range(8):
+        r1 = rng.randint(1, 31)
+        r2 = rng.randint(1, 31)
+
+        # Set mie = 0xFFFFFFFF (all interrupt sources enabled)
+        # ADDI r1, x0, -2048 → r1 = 0xFFFFF800; ORI r1, r1, 2047 → r1 = 0xFFFFFFFF
+        stream.append((ADDI, r1, 0, 0, 0, 0))         # r1 = -2048
+        stream.append((ORI,  r1, r1, 0, 4, 0))         # r1 |= 2047 → 0xFFFFFFFF
+        stream.append((CSRRW, r2, r1, 0, 0, MIE_B))    # mie = all-ones
+
+        # Enable global interrupts: CSRRSI mstatus, 8 (bit3 = MIE)
+        # uimm=8 ≠ 0, so this is CSR_OP_SET (sets bit 3 of mstatus)
+        stream.append((CSRRSI, r2, 8, 0, 0, MSTATUS))
+
+        # Run NOPs to let the LFSR irq_external_i / irq_fast_i[0] fire.
+        # ADDI x0, x0, 0 is a NOP.
+        for _ in range(8):
+            stream.append((ADDI, 0, 0, 0, 2, 0))       # NOP: x0 = 0+0
+
+        # MRET: return from interrupt handler, restores mstatus.MIE from MPIE,
+        # sets MPIE=1, returns to mepc. This re-arms the core for next interrupt.
+        stream.append((MRET, 0, 0, 0, 0, 0))
+
+        # Re-enable interrupts after MRET (mstatus.MIE may have been cleared by
+        # the interrupt entry; set it again for the next LFSR window)
+        stream.append((CSRRSI, r2, 8, 0, 0, MSTATUS))
+
+        # ECALL to drive a non-irq_ext trap: covers lower_cause[4]:1->0 if the
+        # previous interrupt was a fast IRQ (cause ≥ 16, bit4=1). ECALL gives
+        # cause=11 (0xB), bit4=0.
+        stream.append((ECALL, 0, 0, 0, 0, 0))
+
+    return stream
+
+
+# ---------------------------------------------------------------------------
 # Convenience: all streams as a list for external callers
 # ---------------------------------------------------------------------------
 
@@ -2542,6 +3191,15 @@ ALL_STREAM_BUILDERS = [
     build_ibex_icache_enable_during_invalidate_stream,
     build_ibex_icache_compressed_alignment_skid_stream,
     build_ibex_icache_branch_density_stale_fill_stream,
+    # ibex_alu (4) -- Pass 5
+    build_alu_imd_val_d1_bcompress_msb_stream,
+    build_alu_imd_val_d1_dense_mask_stream,
+    build_alu_multdiv_operand_lsb_stream,
+    build_alu_gorc_grev_xperm_stream,
+    # ibex_cs_registers (3) -- Pass 5: mseccfg, PMP lock-clear via RLB, irq enables
+    build_mseccfg_toggle_stream,
+    build_pmp_cfg_lock_rlb_clear_stream,
+    build_irq_enable_mcause_stream,
 ]
 
-assert len(ALL_STREAM_BUILDERS) == 79, len(ALL_STREAM_BUILDERS)
+assert len(ALL_STREAM_BUILDERS) == 86, len(ALL_STREAM_BUILDERS)
