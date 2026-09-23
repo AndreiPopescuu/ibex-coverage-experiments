@@ -3033,21 +3033,15 @@ def build_irq_enable_mcause_stream(rng):
       lower_cause[4]: set when a fast interrupt fires (cause ≥ 16 = 0x10,
         i.e. bit4 of cause code set).
 
-    The testbench LFSR already asserts irq_external_i and irq_fast_i[0..14]
-    periodically. For the core to actually TAKE those interrupts, the
-    instruction stream must enable them:
-      mstatus.MIE (bit 3 = value 0x8): global interrupt enable.
-      mie.MEIE    (bit 11 = value 0x800): machine external interrupt enable.
-      mie.MFIE    (bits 31:16): fast interrupt enable — bit 16 for irq_fast[0].
-
-    Strategy: set mie=all-ones, set mstatus.MIE, run NOPs to give the LFSR
-    time to fire, then MRET to re-enable MIE after the handler returns.
-    For lower_cause[4]:1->0, a subsequent non-fast trap (ECALL, cause=11 or
-    external IRQ with cause != fast) overwrites mcause with bit4=0.
+    The testbench LFSR asserts irq_external_i and irq_fast_i[0..14] periodically.
+    We enable them in mie + mstatus and run NOPs so the LFSR window lands while
+    the core is interruptible. The testbench trap handler at mtvec handles the
+    interrupt and does its own MRET — we do NOT emit MRET or ECALL ourselves
+    (MRET in a non-handler context jumps to potentially invalid mepc, causing a
+    fault loop that burns cycles without coverage).
     """
     stream = []
-    ADDI = 10; ORI = 14; CSRRW = 27; CSRRSI = 67; CSRRCI = 68
-    ECALL = 62; MRET = 70
+    ADDI = 10; ORI = 14; CSRRW = 27; CSRRSI = 67
     MSTATUS = 29   # bucket 29 = 0x300
     MIE_B    = 30  # bucket 30 = 0x304
 
@@ -3055,33 +3049,18 @@ def build_irq_enable_mcause_stream(rng):
         r1 = rng.randint(1, 31)
         r2 = rng.randint(1, 31)
 
-        # Set mie = 0xFFFFFFFF (all interrupt sources enabled)
-        # ADDI r1, x0, -2048 → r1 = 0xFFFFF800; ORI r1, r1, 2047 → r1 = 0xFFFFFFFF
-        stream.append((ADDI, r1, 0, 0, 0, 0))         # r1 = -2048
+        # Set mie = 0xFFFFFFFF (enable all interrupt sources)
+        stream.append((ADDI, r1, 0, 0, 0, 0))         # r1 = -2048 = 0xFFFFF800
         stream.append((ORI,  r1, r1, 0, 4, 0))         # r1 |= 2047 → 0xFFFFFFFF
         stream.append((CSRRW, r2, r1, 0, 0, MIE_B))    # mie = all-ones
 
-        # Enable global interrupts: CSRRSI mstatus, 8 (bit3 = MIE)
-        # uimm=8 ≠ 0, so this is CSR_OP_SET (sets bit 3 of mstatus)
+        # Enable global interrupts: CSRRSI mstatus, 8 sets bit 3 (MIE)
         stream.append((CSRRSI, r2, 8, 0, 0, MSTATUS))
 
-        # Run NOPs to let the LFSR irq_external_i / irq_fast_i[0] fire.
-        # ADDI x0, x0, 0 is a NOP.
-        for _ in range(8):
-            stream.append((ADDI, 0, 0, 0, 2, 0))       # NOP: x0 = 0+0
-
-        # MRET: return from interrupt handler, restores mstatus.MIE from MPIE,
-        # sets MPIE=1, returns to mepc. This re-arms the core for next interrupt.
-        stream.append((MRET, 0, 0, 0, 0, 0))
-
-        # Re-enable interrupts after MRET (mstatus.MIE may have been cleared by
-        # the interrupt entry; set it again for the next LFSR window)
-        stream.append((CSRRSI, r2, 8, 0, 0, MSTATUS))
-
-        # ECALL to drive a non-irq_ext trap: covers lower_cause[4]:1->0 if the
-        # previous interrupt was a fast IRQ (cause ≥ 16, bit4=1). ECALL gives
-        # cause=11 (0xB), bit4=0.
-        stream.append((ECALL, 0, 0, 0, 0, 0))
+        # NOPs — testbench trap handler takes the interrupt and returns via its
+        # own MRET; execution resumes at the next NOP automatically
+        for _ in range(16):
+            stream.append((ADDI, 0, 0, 0, 2, 0))       # NOP
 
     return stream
 
