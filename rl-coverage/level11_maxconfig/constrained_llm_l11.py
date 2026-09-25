@@ -2913,12 +2913,20 @@ def build_mseccfg_toggle_stream(rng):
       pmp_mseccfg is written when csr_addr_i==CSR_MSECCFG (0x747) and csr_we_i.
       pmp_mseccfg_we toggles on every write; pmp_mseccfg_err fires on security
       violations (e.g. MML-mode write conflicts).
-      Bits: [0]=rlb (Rule Locking Bypass), [1]=mmwp (Machine Mode Whitelist
-      Policy), [2]=mml (Machine Mode Lockdown).
+      Bits (CORRECTED 2026-09-25 -- ibex_pkg.sv:702-704 gives the real
+      assignment; an earlier version of this docstring had bit0/bit2
+      swapped): [0]=mml (Machine Mode Lockdown), [1]=mmwp (Machine Mode
+      Whitelist Policy), [2]=rlb (Rule Locking Bypass).
       NB: per Smepmp spec MML and MMWP are one-way sticky once set; 1->0
-      transitions on those bits may be structurally unreachable after first set.
-      RLB is freely clearable. We cover 0->1 on all three and attempt 1->0 by
-      writing 0 before any sticky bit is set.
+      transitions on those bits are structurally unreachable after first set
+      (confirmed dead in coverage_gap_report.py's ibex_cs_registers scan).
+      RLB is freely clearable as long as no pmp_cfg entry is currently
+      "locked" (lock=1 while rlb=0 -- see build_pmp_cfg_lock_rlb_clear_
+      stream's docstring for the any_pmp_entry_locked latch this interacts
+      with). The uimm values below (1, 2, 4, 6, 7) are bitmasks against the
+      REAL bit positions -- the code was always numerically correct even
+      when this docstring's English labels were swapped, so no behavior
+      changed by this docstring fix, only the comments below.
 
     CSRRWI with uimm=0 writes 0 to the CSR (ibex_decoder.sv: CSRRWI is always
     CSR_OP_WRITE, unlike CSRRSI/CSRRCI which become READ when uimm==0).
@@ -2931,30 +2939,30 @@ def build_mseccfg_toggle_stream(rng):
         r = rng.randint(1, 31)
         r2 = rng.randint(1, 15)
 
-        # Write 0 — attempt to clear all bits (covers 1->0 on rlb; mml/mmwp sticky)
-        stream.append((CSRRWI, r, 0, 0, 0, MSECCFG))   # uimm=0 → write 0
+        # Write 0 -- attempt to clear all bits (covers 1->0 on rlb; mml/mmwp sticky)
+        stream.append((CSRRWI, r, 0, 0, 0, MSECCFG))   # uimm=0 -> write 0
 
-        # Set rlb (bit 0) — cover rlb:0->1
+        # Set mml (bit 0) -- cover mml:0->1 (sticky from here on)
         stream.append((CSRRSI, r, 1, 0, 0, MSECCFG))   # set bit 0
 
-        # Clear rlb — cover rlb:1->0 (rlb is not sticky)
+        # Attempt to clear mml -- no-op, mml is sticky; harmless extra pmp_mseccfg_we pulse
         stream.append((CSRRCI, r, 1, 0, 0, MSECCFG))   # clear bit 0
 
-        # Set mmwp (bit 1) — cover mmwp:0->1
+        # Set mmwp (bit 1) -- cover mmwp:0->1 (sticky from here on)
         stream.append((CSRRSI, r, 2, 0, 0, MSECCFG))   # set bit 1
 
-        # Write 0 again — attempt mmwp:1->0 (sticky → may stay 1, still hits we)
+        # Write 0 again -- attempt mmwp:1->0 (sticky -> stays 1, still hits we)
         stream.append((CSRRWI, r, 0, 0, 0, MSECCFG))
 
-        # Set mml (bit 2) — cover mml:0->1
+        # Set rlb (bit 2) -- cover rlb:0->1, as long as nothing is pmp-locked yet
         stream.append((CSRRSI, r, 4, 0, 0, MSECCFG))   # set bit 2
 
         # Write 7 (all bits) via CSRRWI to ensure all paths in the write mux hit
         stream.append((CSRRWI, r, 7, 0, 0, MSECCFG))   # uimm=7
 
-        # Try clearing via CSRRCI — potential pmp_mseccfg_err if locked entries exist
+        # Clear mmwp(no-op, sticky) and rlb (bit 2) together -- cover rlb:1->0
         stream.append((CSRRCI, r, 6, 0, 0, MSECCFG))   # clear bits 1,2
-        stream.append((CSRRCI, r, 1, 0, 0, MSECCFG))   # clear bit 0
+        stream.append((CSRRCI, r, 1, 0, 0, MSECCFG))   # clear bit 0 (mml, no-op)
 
         # Read back with CSRRW (always writes pmp_mseccfg_we) using varying rs1
         stream.append((CSRRW, r2, r, 0, 0, MSECCFG))
@@ -2970,24 +2978,35 @@ def build_pmp_cfg_lock_rlb_clear_stream(rng):
         any_pmp_entry_locked = |pmp_cfg_locked
     and :1265 -- pmp_mseccfg_d.rlb = any_pmp_entry_locked ? 1'b0 : wdata[RLB_BIT].
 
-    FIX (2026-09-25, closed-loop pass): the original version of this function
+    FIX #1 (2026-09-25, Pass 6): the original version of this function
     cleared rlb FIRST, then set lock=1 on all 16 entries while rlb was still
     0. The moment that happened, pmp_cfg_locked[i] became 1 for every entry
     (lock=1 & ~rlb=1), so any_pmp_entry_locked latched to 1 -- and per the
     RTL line above, that PERMANENTLY forces rlb back to 0 on every subsequent
     write attempt, for the rest of the seed's simulation (no instruction in
     this codec can clear rlb once any entry is in this state; only reset can).
-    So the old order self-locked on its very first action group and the
-    "enable rlb, clear cfg" steps after it were silently no-ops forever
-    after -- confirmed empirically: a fresh 49-seed opentitan_upstream
-    measurement still showed pmp_cfg[N].{lock,read,write,exec,mode}:1->0
-    completely uncovered for nearly all 16 regions despite this function
-    already running in every seed.
 
-    Correct order (RLB must be set BEFORE anything gets locked, not after):
-      1. Set rlb=1 while no entry is locked yet -- pmp_cfg_locked is all-0,
-         so any_pmp_entry_locked is 0 and the write always succeeds
-         (rlb:0->1).
+    FIX #2 (2026-09-25, same day, caught when Pass 6's re-measurement showed
+    ZERO change in ibex_cs_registers coverage despite fix #1): fix #1 used
+    uimm=1 (bit 0) for "set/clear rlb". ibex_pkg.sv:702-704 gives the REAL
+    bit assignment: CSR_MSECCFG_MML_BIT=0, CSR_MSECCFG_MMWP_BIT=1,
+    CSR_MSECCFG_RLB_BIT=2 -- bit 0 is MML, not RLB. So fix #1 was setting
+    MML=1 (sticky, permanent) every iteration while never touching the real
+    RLB bit at all, meaning the very next pmp_cfg lock=1 write still hit
+    any_pmp_entry_locked=1 with real rlb still 0 -- the exact same failure
+    as before fix #1, just via a different wrong bit instead of a wrong
+    order. (Also worth knowing: the already-merged build_mseccfg_toggle_
+    stream's comments make the identical bit0<->bit2 mix-up ("[0]=rlb",
+    "[2]=mml"), though tracing its actual numeric uimm values through the
+    real bit positions shows its own RLB manipulation happens to be
+    numerically correct despite the mislabeled comments -- only THIS
+    function's code, not just its comments, had the bug.)
+
+    Correct order AND correct bit (RLB is bit 2 = uimm 4, must be set
+    BEFORE anything gets locked, not after):
+      1. Set rlb=1 (uimm=4, bit 2) while no entry is locked yet --
+         pmp_cfg_locked is all-0, so any_pmp_entry_locked is 0 and the
+         write always succeeds (rlb:0->1).
       2. With rlb=1, pmp_cfg_locked[i] = lock & ~rlb = lock & 0 = 0 for EVERY
          entry regardless of lock's value (RTL comment: "RLB allows the lock
          bit to be bypassed") -- so cfg writes stay unconditionally enabled
@@ -2997,15 +3016,29 @@ def build_pmp_cfg_lock_rlb_clear_stream(rng):
       3. Still with rlb=1 (writes still unconditionally enabled), write 0 to
          pmpcfg0..3 -- clears lock/read/write/exec/mode back to 0 on all 16
          entries (the target :1->0 transitions).
-      4. Only NOW clear rlb: at this point every pmp_cfg[i].lock is already
-         0, so pmp_cfg_locked is all-0, any_pmp_entry_locked is 0, and the
-         write to clear rlb is not blocked (rlb:1->0).
+      4. Only NOW clear rlb (uimm=4, bit 2): at this point every
+         pmp_cfg[i].lock is already 0, so pmp_cfg_locked is all-0,
+         any_pmp_entry_locked is 0, and the write to clear rlb is not
+         blocked (rlb:1->0).
+
+    Residual risk (documented, not fixed here): ALL_STREAM_BUILDERS runs
+    every stream in every seed with only stream ORDER randomized. If any
+    OTHER stream (e.g. one of the original Pass-1 ibex_pmp streams, which
+    predate any RLB awareness) writes pmp_cfg[i].lock=1 with real rlb=0
+    *before* this function runs in a given seed's shuffled order, that
+    earlier write permanently poisons rlb for the rest of that seed, and
+    this function's own rlb:0->1 attempt will also fail for that seed
+    (though toggle coverage is a union across all 88+ seeds, so this only
+    needs to NOT happen in every single seed to still register the
+    transition). If a future measurement still shows no improvement here,
+    audit every other stream that writes to PMPCFG0-3/pmp_cfg addresses.
 
     CSRRWI uimm=0 always writes 0 (CSR_OP_WRITE per ibex_decoder.sv).
     """
     stream = []
     ADDI = 10; CSRRW = 27; CSRRWI = 66; CSRRSI = 67; CSRRCI = 68
     MSECCFG = 70   # bucket 70 = 0x747
+    RLB_MASK = 4   # bit 2 = CSR_MSECCFG_RLB_BIT (ibex_pkg.sv:704) -- NOT bit 0
     PMPCFG0 = 33   # 0x3A0
     PMPCFG1 = 34   # 0x3A1
     PMPCFG2 = 35   # 0x3A2
@@ -3017,7 +3050,7 @@ def build_pmp_cfg_lock_rlb_clear_stream(rng):
 
         # Set RLB FIRST, while nothing is locked yet -> rlb:0->1, and this is
         # what keeps every write below from self-locking the whole module.
-        stream.append((CSRRSI, r2, 1, 0, 0, MSECCFG))
+        stream.append((CSRRSI, r2, RLB_MASK, 0, 0, MSECCFG))
 
         # Load lock-setting value: ADDI r1, x0, -100 -> r1 = 0xFFFFFF9C
         # bits[7:0]=0x9C: lock(7)=1, NAPOT(4:3)=11, exec(2)=1 -> sets lock=1
@@ -3040,7 +3073,7 @@ def build_pmp_cfg_lock_rlb_clear_stream(rng):
 
         # NOW clear rlb -- every entry's lock is already 0 at this point, so
         # any_pmp_entry_locked is 0 and this write actually takes (rlb:1->0).
-        stream.append((CSRRCI, r2, 1, 0, 0, MSECCFG))
+        stream.append((CSRRCI, r2, RLB_MASK, 0, 0, MSECCFG))
 
     return stream
 
