@@ -29,7 +29,11 @@ Build change: IRQ ports exposed → lockstep + full interrupt tree elaborated.
 |------|-------|--------|--------|------|-------|
 | Sep 13 | First run, IRQ ports exposed (VPI driver, broken) | 77.75% (72872/93726) | 72.14% | 54.30% | VPI silent no-op |
 | Sep 19 | LFSR IRQ generator (commit 00e23ab) | **80.14%** (75141/93768) | 73.60% | 54.24% | +2.39pp, IRQ paths covered |
-| — | Pass 5 (in progress) | — | — | — | PMP sequences + … |
+| Sep 23 | Pass 5 (mseccfg codec + 3 cs_registers streams, 86 streams) | 79.82% (49 seeds, default 139406-instr budget) | 73.82% | 53.07% | Diluted measurement — see seed-count-dilution note below; PMP-lock-clear stream shipped with an RLB/lock ordering bug (fixed Pass 6) |
+| Sep 25 | Pass 6 (fix PMP RLB/lock ordering bug + 6 new gap-report streams, 92 streams), default budget | 77.16% (31 seeds, default 139406-instr budget) | 73.38% | 53.74% | Diluted measurement, same budget as Pass 5 row above — NOT a real regression, see note below |
+| Sep 25 | **Pass 6, re-measured at `TARGET_INSTRUCTIONS=400000`** (92 streams, 88 seeds) | **80.29%** (75289/93768) | **74.49%** | 54.18% | Best toggle/branch to date once seed-count dilution is controlled for; +0.15pp toggle / +0.89pp branch vs the Sep 19 baseline |
+
+**Seed-count-dilution lesson (confirms `LLM_CRT_OVERVIEW.md`'s open-thread hypothesis #2):** `run_llm_profile.sh`'s default `TARGET_INSTRUCTIONS=139406` picks seed count as `target / seed0_word_count`. Since `_build_llm_rtl_directed` runs **every** stream in `ALL_STREAM_BUILDERS` on **every** seed, each new stream makes every seed's corpus longer, which *shrinks* the seed count at a fixed instruction budget: 79 streams → ~133 seeds (Sep 19) → 86 streams → 49 seeds → 92 streams → 31 seeds. Fewer seeds means fewer independent random stream-orderings sampled, which costs more coverage than most individual new streams gain — so toggle % **dropped** two passes in a row at the default budget despite genuinely fixing bugs and adding working streams. Re-running the *same* Pass 6 code at `TARGET_INSTRUCTIONS=400000` (88 seeds) flips the sign: toggle/branch both come out **ahead** of every prior measurement. **Any future pass must scale `TARGET_INSTRUCTIONS` up as `ALL_STREAM_BUILDERS` grows** (or switch to a fixed `--n-seeds` in `gen_one_profile_corpus.py` instead of a fixed total-instruction budget) — comparing two passes at the same default budget is no longer apples-to-apples once the stream count differs.
 
 ---
 
