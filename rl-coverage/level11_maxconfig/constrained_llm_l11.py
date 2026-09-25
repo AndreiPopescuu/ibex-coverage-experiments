@@ -2973,10 +2973,12 @@ def build_mseccfg_toggle_stream(rng):
 def build_pmp_cfg_lock_rlb_clear_stream(rng):
     """Target ibex_cs_registers.sv: pmp_cfg[N].lock:1->0 via RLB.
 
-    RTL: ibex_cs_registers.sv:1218-1219 --
-        pmp_cfg_locked[i]    = pmp_cfg[i].lock & ~pmp_mseccfg_q.rlb
-        any_pmp_entry_locked = |pmp_cfg_locked
-    and :1265 -- pmp_mseccfg_d.rlb = any_pmp_entry_locked ? 1'b0 : wdata[RLB_BIT].
+    RTL: ibex_cs_registers.sv:1218 -- pmp_cfg_locked[i] = pmp_cfg[i].lock &
+    ~pmp_mseccfg_q.rlb; :1265 -- any_pmp_entry_locked = |pmp_cfg_locked;
+    :1269 -- pmp_mseccfg_d.rlb = any_pmp_entry_locked ? 1'b0 : wdata[RLB_BIT].
+    (Line numbers independently re-verified by review agent 2026-09-25 --
+    an earlier version of this docstring had 1219/1265 for these last two,
+    off by a blank line and 4 lines respectively.)
 
     FIX #1 (2026-09-25, Pass 6): the original version of this function
     cleared rlb FIRST, then set lock=1 on all 16 entries while rlb was still
@@ -3021,17 +3023,27 @@ def build_pmp_cfg_lock_rlb_clear_stream(rng):
          any_pmp_entry_locked is 0, and the write to clear rlb is not
          blocked (rlb:1->0).
 
-    Residual risk (documented, not fixed here): ALL_STREAM_BUILDERS runs
-    every stream in every seed with only stream ORDER randomized. If any
-    OTHER stream (e.g. one of the original Pass-1 ibex_pmp streams, which
-    predate any RLB awareness) writes pmp_cfg[i].lock=1 with real rlb=0
-    *before* this function runs in a given seed's shuffled order, that
-    earlier write permanently poisons rlb for the rest of that seed, and
-    this function's own rlb:0->1 attempt will also fail for that seed
-    (though toggle coverage is a union across all 88+ seeds, so this only
-    needs to NOT happen in every single seed to still register the
-    transition). If a future measurement still shows no improvement here,
-    audit every other stream that writes to PMPCFG0-3/pmp_cfg addresses.
+    Residual risk (independently confirmed by a review agent 2026-09-25,
+    documented rather than fixed -- see rationale below): ALL_STREAM_
+    BUILDERS runs every stream in every seed with only stream ORDER
+    randomized. build_pmp_lock_stream (this file, ~line 223) deterministically
+    sets pmp_cfg[0..4].lock=1 via CSRRW with values 0xFFFFFF9C/0x000007FF
+    and never touches MSECCFG, so rlb stays 0 there -- if it runs BEFORE
+    this function in a given seed's shuffled order, this function's own
+    rlb:0->1 attempt fails for that seed (any_pmp_entry_locked already
+    latched). build_pmp_csrr_variants_stream and build_pmp_random_walk_
+    stream also write PMPCFG0-3 from arbitrary/residual register values
+    and were flagged as unproven secondary risks (whether they set lock=1
+    depends on register contents at the time, not a fixed encoding).
+    NOT fixing build_pmp_lock_stream here: its own coverage target (ibex_
+    pmp.sv's perm_check_wrapper locked-access path) is a legitimate,
+    distinct signal that specifically needs lock=1 while rlb=0 is the
+    common case -- forcing it to always set rlb first would be scope creep
+    into a different stream's job. With 88+ seeds and roughly independent
+    per-seed shuffle order between these two streams, toggle coverage's
+    union-across-seeds semantics should still register this function's
+    transitions in the seeds where the order happens to favor it; revisit
+    only if a fresh measurement still shows zero improvement here.
 
     CSRRWI uimm=0 always writes 0 (CSR_OP_WRITE per ibex_decoder.sv).
     """
