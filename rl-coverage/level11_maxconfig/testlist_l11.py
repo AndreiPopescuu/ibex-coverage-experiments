@@ -259,14 +259,28 @@ def _build_invalid_csr(seed, n_actions=200):
 
 
 def _build_llm_rtl_directed(seed):
-    """Run all 40 RTL-derived stream builders from constrained_llm_l11.py in a
-    seeded-random order, then pad to at least 200 actions with CATEGORY_WEIGHTS_LLM
-    weighted random sampling if the streams are short.
+    """Run all RTL-derived stream builders from constrained_llm_l11.py in a
+    seeded-random STREAM order, then pad to at least 200 actions with
+    CATEGORY_WEIGHTS_LLM weighted random sampling if the streams are short.
 
-    Each builder targets a specific RTL structure in one of the tracked Ibex modules
-    (ibex_pmp, ibex_csr, ibex_counter, ibex_dummy_instr, ibex_alu, ibex_multdiv_fast,
-    ibex_load_store_unit, ibex_branch_predict). The full sequence of all 40 streams
-    exercises every RTL-targeted path in one run.
+    Each builder targets a specific RTL structure in one of the tracked Ibex
+    modules. The full sequence of all streams exercises every RTL-targeted
+    path in one run.
+
+    IMPORTANT: each stream's own action order is preserved verbatim -- do NOT
+    add a final `rng.shuffle(actions)` over the fully-flattened list here.
+    Several streams depend on strict adjacency between specific actions (e.g.
+    "compute a value across N instructions, then immediately CSR-write it" --
+    see constrained_llm_l11.py's build_core_csr_mtvec_toggle_stream); a full
+    shuffle can reorder the write before the value it depends on is ready,
+    silently defeating the stream's entire purpose while still "running"
+    without error. Confirmed suspect for exactly this: build_core_csr_mtvec_
+    toggle_stream showed zero measured coverage improvement when this
+    function had the shuffle, while the near-identical mepc/mtval streams
+    (whose target registers also get incidental hardware-driven writes on
+    any trap, independent of instruction order) did show improvement. Only
+    the STREAM order is randomized (which stream's block comes first) --
+    that's adjacency-safe since it doesn't reorder actions within a stream.
     """
     rng_py = _random_stdlib.Random(seed)
     rng_np = np.random.default_rng(seed)

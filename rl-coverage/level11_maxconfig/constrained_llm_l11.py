@@ -2965,21 +2965,41 @@ def build_mseccfg_toggle_stream(rng):
 def build_pmp_cfg_lock_rlb_clear_stream(rng):
     """Target ibex_cs_registers.sv: pmp_cfg[N].lock:1->0 via RLB.
 
-    RTL: ibex_pmp.sv — pmpcfg writes are gated:
-        if (!pmp_cfg_locked_i[i] || pmp_mseccfg_i.rlb)
-    When rlb=1, even locked entries can be overwritten (lock cleared).
+    RTL: ibex_cs_registers.sv:1218-1219 --
+        pmp_cfg_locked[i]    = pmp_cfg[i].lock & ~pmp_mseccfg_q.rlb
+        any_pmp_entry_locked = |pmp_cfg_locked
+    and :1265 -- pmp_mseccfg_d.rlb = any_pmp_entry_locked ? 1'b0 : wdata[RLB_BIT].
 
-    Strategy:
-      1. Clear rlb so initial lock-set writes are definitely applied.
-      2. Load 0xFFFFFF9C (-100 signed) into r1: bits[7:0]=0x9C=1001_1100
-         → bit7=lock=1, bits[4:3]=11=NAPOT, bit2=exec=1 — sets lock in all
-         4 pmp entries packed into pmpcfgN (entries 0-3 in pmpcfg0, etc.)
-         and similarly for upper bytes.
-      3. Write to pmpcfg0..3 to lock entries 0-15 (pmp_cfg[N].lock:0->1).
-      4. Enable rlb (CSRRSI mseccfg, 1).
-      5. Write 0 to pmpcfg0..3 — with rlb=1 this clears all bits including
-         lock (pmp_cfg[N].lock:1->0).
-      6. Clear rlb again for next iteration.
+    FIX (2026-09-25, closed-loop pass): the original version of this function
+    cleared rlb FIRST, then set lock=1 on all 16 entries while rlb was still
+    0. The moment that happened, pmp_cfg_locked[i] became 1 for every entry
+    (lock=1 & ~rlb=1), so any_pmp_entry_locked latched to 1 -- and per the
+    RTL line above, that PERMANENTLY forces rlb back to 0 on every subsequent
+    write attempt, for the rest of the seed's simulation (no instruction in
+    this codec can clear rlb once any entry is in this state; only reset can).
+    So the old order self-locked on its very first action group and the
+    "enable rlb, clear cfg" steps after it were silently no-ops forever
+    after -- confirmed empirically: a fresh 49-seed opentitan_upstream
+    measurement still showed pmp_cfg[N].{lock,read,write,exec,mode}:1->0
+    completely uncovered for nearly all 16 regions despite this function
+    already running in every seed.
+
+    Correct order (RLB must be set BEFORE anything gets locked, not after):
+      1. Set rlb=1 while no entry is locked yet -- pmp_cfg_locked is all-0,
+         so any_pmp_entry_locked is 0 and the write always succeeds
+         (rlb:0->1).
+      2. With rlb=1, pmp_cfg_locked[i] = lock & ~rlb = lock & 0 = 0 for EVERY
+         entry regardless of lock's value (RTL comment: "RLB allows the lock
+         bit to be bypassed") -- so cfg writes stay unconditionally enabled
+         the whole time rlb=1. Write 0xFFFFFF9C to pmpcfg0..3 to set
+         lock=1 (bit7 of every packed byte) on all 16 entries
+         (pmp_cfg[N].lock:0->1, plus read/write/exec/mode bits set too).
+      3. Still with rlb=1 (writes still unconditionally enabled), write 0 to
+         pmpcfg0..3 -- clears lock/read/write/exec/mode back to 0 on all 16
+         entries (the target :1->0 transitions).
+      4. Only NOW clear rlb: at this point every pmp_cfg[i].lock is already
+         0, so pmp_cfg_locked is all-0, any_pmp_entry_locked is 0, and the
+         write to clear rlb is not blocked (rlb:1->0).
 
     CSRRWI uimm=0 always writes 0 (CSR_OP_WRITE per ibex_decoder.sv).
     """
@@ -2995,30 +3015,31 @@ def build_pmp_cfg_lock_rlb_clear_stream(rng):
         r1 = rng.randint(1, 31)
         r2 = rng.randint(1, 31)
 
-        # Clear rlb first (start from clean state, rlb=0)
-        stream.append((CSRRCI, r2, 1, 0, 0, MSECCFG))
+        # Set RLB FIRST, while nothing is locked yet -> rlb:0->1, and this is
+        # what keeps every write below from self-locking the whole module.
+        stream.append((CSRRSI, r2, 1, 0, 0, MSECCFG))
 
-        # Load lock-setting value: ADDI r1, x0, -100 → r1 = 0xFFFFFF9C
-        # bits[7:0]=0x9C: lock(7)=1, NAPOT(4:3)=11, exec(2)=1 → sets lock=1
+        # Load lock-setting value: ADDI r1, x0, -100 -> r1 = 0xFFFFFF9C
+        # bits[7:0]=0x9C: lock(7)=1, NAPOT(4:3)=11, exec(2)=1 -> sets lock=1
         # (same byte repeats across all 4 entries in each pmpcfgN word)
         stream.append((ADDI, r1, 0, 0, 1, 0))   # r1 = -100 = 0xFFFFFF9C
 
-        # Set lock in pmpcfg0..3 (entries 0-15): pmp_cfg[N].lock:0->1
+        # Set lock in pmpcfg0..3 (entries 0-15): pmp_cfg[N].lock:0->1.
+        # Safe because rlb=1 -> pmp_cfg_locked stays 0 regardless of lock.
         stream.append((CSRRW, r2, r1, 0, 0, PMPCFG0))
         stream.append((CSRRW, r2, r1, 0, 0, PMPCFG1))
         stream.append((CSRRW, r2, r1, 0, 0, PMPCFG2))
         stream.append((CSRRW, r2, r1, 0, 0, PMPCFG3))
 
-        # Enable RLB (Rule Locking Bypass) — allows clearing locked entries
-        stream.append((CSRRSI, r2, 1, 0, 0, MSECCFG))
-
-        # Clear pmpcfg0..3 with rlb=1 → pmp_cfg[N].lock:1->0 covered
+        # Clear pmpcfg0..3 -- still safe, rlb is still 1 -> pmp_cfg[N].lock
+        # (and read/write/exec/mode):1->0 covered on all 16 entries.
         stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG0))
         stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG1))
         stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG2))
         stream.append((CSRRWI, r2, 0, 0, 0, PMPCFG3))
 
-        # Clear rlb again (rlb:1->0)
+        # NOW clear rlb -- every entry's lock is already 0 at this point, so
+        # any_pmp_entry_locked is 0 and this write actually takes (rlb:1->0).
         stream.append((CSRRCI, r2, 1, 0, 0, MSECCFG))
 
     return stream
@@ -3062,6 +3083,227 @@ def build_irq_enable_mcause_stream(rng):
         for _ in range(16):
             stream.append((ADDI, 0, 0, 0, 2, 0))       # NOP
 
+    return stream
+
+
+def build_mcause_lower_cause_bit3_toggle_stream(rng):
+    """Target ibex_cs_registers.sv:110,793 -- csr_mcause_i.lower_cause[3].
+
+    ibex_pkg.sv:362-365: ExcCauseEcallMMode.lower_cause=5'd11 (0b01011,
+    bit3=1) and ExcCauseEcallUMode.lower_cause=5'd08 (0b01000, bit3=1) --
+    bit3 is 1 for ECALL regardless of privilege mode, so no privilege-mode
+    setup is needed. ibex_pkg.sv:354-355: ExcCauseIllegalInsn.lower_cause=
+    5'd02 (0b00010, bit3=0). ibex_cs_registers.sv:793: mcause_d =
+    csr_mcause_i, latched whenever csr_save_cause_i fires (any trap).
+
+    ECALL=62, ILLEGAL_INSN=83 (codec_l10.py Op enum). Alternating them
+    drives lower_cause[3] 0->1 (ECALL) then 1->0 (illegal insn) every pair.
+    Isolated-agent-derived (Pass 6 gap-report round), reviewed and CONFIRMED
+    against current RTL with no changes needed.
+    """
+    stream = []
+    for _ in range(16):
+        stream.append((62, 0, 0, 0, 2, 0))  # ECALL -> mcause=11 or 8, lower_cause[3]=1
+        stream.append((83, 0, 0, 0, 2, 0))  # ILLEGAL_INSN -> mcause=2, lower_cause[3]=0
+    return stream
+
+
+def build_minstret_upper_word_toggle_stream(rng):
+    """Target ibex_counter.sv:99-103 (g_counter_full/g_counter_val_upd_o) via
+    minstret_counter_i (ibex_cs_registers.sv:1392-1404) -> counter_upd
+    (ibex_counter.sv:30).
+
+    Only ONE of the 3 ibex_counter instances in ibex_cs_registers.sv can
+    ever move counter_val_upd_o bits [61:32]: mcycle_counter_i's whole
+    output is tied to '0 (ProvideValUpd defaults 0), and every
+    mcounters_variable_i instance ties bits [63:32] to '0 (this build's
+    toplevel, cocotb_ibex_opentitan_upstream.sv, sets MHPMCounterWidth=32).
+    Only minstret_counter_i (CounterWidth=64, ProvideValUpd=1) reaches
+    counter_val_upd_o = counter[63:0] + 1 combinationally every cycle.
+
+    counter[63:32] loads directly from csr_wdata_int on any write to
+    MINSTRETH (0xb82, csr_bucket=12), no read-modify-write. This is a
+    complement to (not a duplicate of) the already-merged
+    build_counter_minstret_overflow_stream: that function proves the 0->1
+    direction for bits 33-61 via a single MINSTRETH=0xFFFFFFFF write plus
+    the natural increment carry into bit 32, but never writes MINSTRETH back
+    to 0 afterward, so it never demonstrates the 1->0 transition for bits
+    33-61. This stream closes that gap by alternating each of the 5 fixed
+    imm_bucket patterns (sign-extended: -2048->0xFFFFF800, -100->0xFFFFFF9C,
+    100->0x00000064, 2047->0x000007FF, 0->0x00000000 -- union of the 4
+    nonzero patterns sets bits 0-29 at least once) against an explicit
+    all-zero write in the same rep, so every targeted bit gets both
+    directions self-contained within this stream.
+
+    Isolated-agent-derived (Pass 6 gap-report round), reviewed and
+    CONFIRMED (docstring corrected for MHPMCounterWidth=32 vs the module's
+    own default of 40; code unchanged).
+    """
+    MINSTRETH = 12   # csr_bucket -> 0xb82 (MINSTRETH)
+    ADDI = 10
+    CSRRW = 27
+    stream = []
+    for ib in range(5):  # walk all 5 fixed imm_bucket patterns
+        scratch = rng.randint(1, 31)
+        stream.append((ADDI, scratch, 0, 0, ib, 0))            # scratch = sext32(imm_bucket)
+        stream.append((CSRRW, 0, scratch, 0, 2, MINSTRETH))    # minstreth = scratch -> counter[63:32]=pattern
+        stream.append((ADDI, 0, 0, 0, 2, 0))                   # filler, let write retire
+        stream.append((CSRRW, 0, 0, 0, 2, MINSTRETH))          # minstreth = x0 = 0 -> counter[63:32]=0
+        stream.append((ADDI, 0, 0, 0, 2, 0))                   # filler
+    return stream
+
+
+def build_pmp_priv_mode_drop_stream(rng):
+    """Target ibex_core.sv:1188,1191 -- g_pmp.pmp_priv_lvl[PMP_I]/[PMP_I2]
+    (missing 1->0 transition).
+
+    priv_mode_id is wired straight into these two PMP channel slots
+    (ibex_core.sv:358,1083). ibex_pkg.sv PRIV_LVL_M=2'b11, PRIV_LVL_U=2'b00
+    -- both bits sit at 11 from reset (ibex_cs_registers.sv:851) and the
+    only way to see 1->0 on both bits is an M->U privilege drop.
+
+    ibex_cs_registers.sv:648-660: a CSR write to mstatus (addr 0x300, bucket
+    29) sets mstatus_d.mpp directly from csr_wdata_int (CSRRW semantics).
+    CSRRW mstatus,x0 zeroes mstatus, including mpp=PRIV_LVL_U. MRET
+    (ibex_cs_registers.sv:816) then commits priv_lvl_q: 11->00.
+
+    Each rep force-traps back to M immediately after with a CSRRS on an
+    M-only CSR (mcycle, addr 0xB00, bucket 9) from U-mode:
+    ibex_cs_registers.sv:326's illegal_csr_priv check is true for any
+    0xB00-class address once priv_lvl_q=U, deterministically raising an
+    illegal-instruction trap, which unconditionally re-elevates priv_lvl_q
+    to M (ibex_cs_registers.sv:769-770) before the stream continues --
+    avoiding this project's known MRET/ECALL-in-wrong-context fault-loop
+    class (see commit bb8be26).
+
+    Isolated-agent-derived (Pass 6 gap-report round), reviewed and
+    CONFIRMED with every RTL/codec citation independently re-verified.
+    """
+    stream = []
+    for _ in range(20):
+        # CSRRW mstatus, x0  ->  mstatus = 0  ->  mstatus.mpp = PRIV_LVL_U
+        stream.append((27, rng.randint(1, 31), 0, 0, rng.randint(0, 4), 29))
+        # MRET  ->  priv_lvl_q: PRIV_LVL_M(11) -> PRIV_LVL_U(00)
+        stream.append((70, 0, 0, 0, 0, 0))
+        # CSRRS on an M-only CSR (mcycle) from U-mode -> illegal_csr_priv
+        # trap -> priv_lvl_q snaps back to PRIV_LVL_M, keeping the stream safe.
+        stream.append((28, rng.randint(1, 31), rng.randint(1, 31), 0,
+                       rng.randint(0, 4), 9))
+        # A couple of cheap, harmless instructions between reps.
+        stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0,
+                       rng.randint(0, 4), 0))
+        stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0,
+                       rng.randint(0, 4), 0))
+    return stream
+
+
+def build_pmp_data_addr_lsb_toggle_stream(rng):
+    """Target ibex_core.sv:1192 -- g_pmp.pmp_req_addr[PMP_D][0]/[1].
+
+    pmp_req_addr[PMP_D] = {2'b00, data_addr_o} (PMP_D=2), so bits [0]/[1]
+    are exactly the low (byte-within-word) bits of the LSU's computed data
+    address. ADDI x5,x0,+100 fixes a known even base (low bits 00). Then
+    alternate LB rd,+0(x5) (addr=100, bits[1:0]=00) against
+    LB rd,+2047(x5) (addr=2147, 2147 mod 4 = 3 = 0b11), giving clean 0->1
+    and 1->0 transitions on both bits simultaneously. rd is kept away from
+    x5 so the base is never clobbered.
+
+    Isolated-agent-derived (Pass 6 gap-report round), reviewed and
+    CONFIRMED. Caveat noted (not a defect specific to this stream): if a
+    mseccfg/mmwp-setting stream runs earlier in the same seed's shuffled
+    program, these loads could start PMP-faulting instead of completing
+    cleanly -- a pre-existing systemic property shared by many other
+    already-merged load/store streams, not specific to this one.
+    """
+    stream = []
+    for _ in range(24):
+        stream.append((10, 5, 0, 0, 3, 0))          # ADDI x5, x0, +100
+        rd_a = rng.choice([r for r in range(1, 32) if r != 5])
+        stream.append((19, rd_a, 5, 0, 2, 0))       # LB rd, 0(x5)   -> addr%4==0
+        rd_b = rng.choice([r for r in range(1, 32) if r != 5])
+        stream.append((19, rd_b, 5, 0, 4, 0))       # LB rd, 2047(x5) -> addr%4==3
+    return stream
+
+
+def build_icache_wdata_funct7_bits_stream(rng):
+    """Best-effort target for ic_data_wdata_o[26,27,29,30,31].
+
+    ic_data_wdata_o is a straight port connection (ibex_core.sv:471) into
+    ibex_if_stage, forwarded (this build's ICache=1'b1) into
+    ibex_icache.sv:463: ic_data_wdata_o = data_wdata_ic0 ^ data_tweak_lw_ic0,
+    with data_tweak_lw_ic0 forced to '0 by default (ICacheTweakInfection=0).
+
+    CAVEAT (unresolved, left honest rather than papered over): this build
+    also sets ICacheECC=1'b1, so each bank of data_wdata_ic0 is produced by
+    a 39-bit SECDED encoder (prim_secded_inv_39_32_enc), not a bare
+    passthrough -- whether its low 32 bits are the raw data unchanged
+    (systematic code) was NOT independently verified (encoder source not
+    present in this repo checkout). This stream is cheap (128 actions) and
+    harmless even if the assumption is wrong (worst case: it just fails to
+    close the intended bins).
+
+    Bits 26/27/29/30/31 sit inside LUI's U-type immediate field.
+    codec_l8.py's LUI_IMM_BUCKETS overrides the generic imm_bucket table for
+    LUI: imm_bucket=0 -> 0x00001 (target bits 0), imm_bucket=3 -> 0xFFFFF
+    (target bits 1). Alternating these toggles the target bits every other
+    fetched instruction; landing on the bank-0 fetch slot is statistical
+    (this codec has no address/line-alignment control).
+
+    Isolated-agent-derived (Pass 6 gap-report round), reviewed and
+    CONFIRMED as best-effort (kept explicitly non-deterministic in framing).
+    """
+    stream = []
+    for _ in range(64):
+        stream.append((64, rng.randint(1, 31), 0, 0, 0, 0))  # LUI, 0x00001 -> bits=0
+        stream.append((64, rng.randint(1, 31), 0, 0, 3, 0))  # LUI, 0xFFFFF -> bits=1
+    return stream
+
+
+def build_icache_wdata_opcode_bit3_stream(rng):
+    """Best-effort target for ic_data_wdata_o[3]. Same passthrough/ECC
+    caveat chain as build_icache_wdata_funct7_bits_stream above (unverified
+    39-bit encoder bit layout in this ICacheECC=1 build).
+
+    Bit 3 is part of the fixed major-opcode field instr[6:0]. JAL's opcode
+    is 0b1101111 (op=44) -> instr[3]=1 unconditionally; ADDI's opcode is
+    0b0010011 (op=10) -> instr[3]=0. Alternating JAL and ADDI toggles
+    instr[3] every other fetched word; hitting the bank-0 slot is
+    statistical, same caveat as above.
+
+    Isolated-agent-derived (Pass 6 gap-report round), reviewed and
+    CONFIRMED as best-effort.
+    """
+    stream = []
+    for _ in range(64):
+        stream.append((44, rng.randint(1, 31), 0, 0, rng.randint(0, 4), 0))  # JAL -> instr[3]=1
+        stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0,
+                       rng.randint(0, 4), 0))                                # ADDI -> instr[3]=0
+    return stream
+
+
+def build_rvfi_order_counter_rollover_stream(rng):
+    """Target ibex_core.sv:1241,1456,1584,1644 -- rvfi_stage_order[0][17..20].
+
+    rvfi_stage_order[0] is a 64-bit monotonic counter of retired (non-dummy)
+    instructions (ibex_core.sv:1456,1644). For a binary ripple counter, bit
+    N's 0->1 transition needs the count to pass 2^N and its 1->0 transition
+    needs it to pass 2^(N+1). The uncovered bins need up to bit20's 1->0,
+    i.e. >2,097,152 real retirements -- purely a run-length requirement, not
+    an encoding trick.
+
+    NOT added to ALL_STREAM_BUILDERS: every entry in that list runs inside
+    EVERY seed's flat concatenated program (testlist_l11.py's
+    _build_llm_rtl_directed), so merging a ~2.2M-action stream there would
+    balloon every single seed's corpus by that much. Isolated-agent-derived
+    and independently reviewed as RTL-correct (Pass 6 gap-report round), but
+    flagged NEEDS FIX -> kept here for reference / as a manually-invoked
+    one-off test only.
+    """
+    stream = []
+    target_count = 2_200_000  # > 2^21, closes bit20's 1->0 transition too
+    for _ in range(target_count):
+        stream.append((10, rng.randint(1, 31), rng.randint(1, 31), 0,
+                       rng.randint(0, 4), 0))
     return stream
 
 
@@ -3176,9 +3418,22 @@ ALL_STREAM_BUILDERS = [
     build_alu_multdiv_operand_lsb_stream,
     build_alu_gorc_grev_xperm_stream,
     # ibex_cs_registers (3) -- Pass 5: mseccfg, PMP lock-clear via RLB, irq enables
+    # (build_pmp_cfg_lock_rlb_clear_stream's RLB/lock ordering was buggy --
+    # fixed in Pass 6, see its docstring)
     build_mseccfg_toggle_stream,
     build_pmp_cfg_lock_rlb_clear_stream,
     build_irq_enable_mcause_stream,
+    # ibex_cs_registers/ibex_counter/ibex_core (6) -- Pass 6: gap-report ->
+    # isolated-agent-per-module synthesis -> independent review pipeline,
+    # see coverage_gap_report.py's module reports for ibex_cs_registers/
+    # ibex_counter/ibex_core. build_rvfi_order_counter_rollover_stream was
+    # deliberately excluded (~2.2M actions/seed) -- see its own docstring.
+    build_mcause_lower_cause_bit3_toggle_stream,
+    build_minstret_upper_word_toggle_stream,
+    build_pmp_priv_mode_drop_stream,
+    build_pmp_data_addr_lsb_toggle_stream,
+    build_icache_wdata_funct7_bits_stream,
+    build_icache_wdata_opcode_bit3_stream,
 ]
 
-assert len(ALL_STREAM_BUILDERS) == 86, len(ALL_STREAM_BUILDERS)
+assert len(ALL_STREAM_BUILDERS) == 92, len(ALL_STREAM_BUILDERS)
